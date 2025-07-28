@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -5,7 +6,7 @@ import json
 
 from model.response import success, failure
 from model.work_group import WorkGroup
-from service.agent_service import AgentService, create_agent, get_agent
+from service.workflow_service import create_workflow, get_workflow
 from util.http_util import http_get
 from model.workplace import Workplace
 
@@ -17,29 +18,32 @@ agentApi = Blueprint('myAgent', __name__)
 def welcome():
     workplace_code = request.args.get('workplaceCode')
     work_group_code = request.args.get('workGroupCode')
+    #session_id = request.args.get('sessionId')
 
     workplace = get_workplace(workplace_code)
     work_group = get_work_group(work_group_code, workplace_code)
 
-    agent_service = create_agent(workplace, work_group)
+    create_workflow(workplace, work_group)
 
-    content = agent_service.welcome()
-
+    content = f"我是{work_group.name}的组长助理，有什么可以帮您？"
     res = success(content)
     return jsonify(res.to_dict())
 
 @agentApi.route('/question', methods=['POST'])
-def handleQuestion():
+def handle_question():
     if not request.is_json:
         return jsonify(failure())
 
     data = request.get_json()
     workplace_code = data.get('workplaceCode')
     work_group_code = data.get('workGroupCode')
+    session_id = data.get('sessionId')
     question = data.get('question')
 
-    agent_service = get_agent(workplace_code, work_group_code)
-    content = agent_service.question(question)
+    workflow_service = get_workflow(workplace_code, work_group_code)
+
+    content = asyncio.run(workflow_service.question(question, session_id))
+
     return jsonify(success(content).to_dict())
 
 

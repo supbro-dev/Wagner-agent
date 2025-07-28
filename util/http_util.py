@@ -14,6 +14,8 @@ def http_get(
     if Config.WAGNER_API_ENDPOINT not in url:
         url = Config.WAGNER_API_ENDPOINT + url
 
+    print("HTTP_GET:", url)
+
     response = requests.get(
         url=url,
         params=params,

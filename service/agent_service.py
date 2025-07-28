@@ -1,20 +1,25 @@
 import os
-from typing import Optional, Any
+from datetime import datetime
+from typing import Optional, Any, List
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
-from langchain.agents import Agent
+from langchain.agents import Agent, create_tool_calling_agent, AgentExecutor
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate, MessagesPlaceholder
 from langchain_deepseek import ChatDeepSeek
 
 from model.employee import Employee
+from model.time_on_task import Scheduling, TimeOnTask, Attendance, Rest, ProcessDuration
 from model.work_group import WorkGroup
 from model.workplace import Workplace
-from util import http_util
+from service.example import group_examples
+from util import http_util, datetime_util
 from util.config_util import read_private_config
 from util.http_util import http_get
+from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task,get_employee_efficiency
 
+# 暂存生成的agent_service
 agent_map = {}
 
 class AgentService:
@@ -39,15 +44,15 @@ class AgentService:
         self.system_template = (f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的组长助理，该小组的工作岗位是:{work_group.position_name}。"
                                 f"{workplace.name}的工作点编码是{workplace.code}，具体介绍是【{workplace.desc}】。"
                                 f"你管理的小组的小组编码是:{work_group.code}，具体介绍是【{work_group.desc}】。"
-                                "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据")
+                                "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"                                
+                                "当用户提到相对日期（如'昨天'、'上周'）时，请将其转换为YYYY-MM-DD格式后再调用工具。当前日期是{currentDate}"
+                                "所有需要根据工号查询的工具，都需要提前调用其他工具查询获取组员的工号"
+                                "返回值用纯文本，不要使用Markdown格式")
 
-    def welcome(self) -> str:
-        user_text = "现在跟你对话的是小组长本人，请说一下你的问候语（越简洁越好）"
+    def question(self, question):
+        tools = [get_employee, get_group_employee, get_employee_time_on_task]
 
-        examples = [
-            {"input": user_text, "output": "上午好，准备开始一天的工作"},
-            {"input": user_text, "output": "有什么需要我来做的，请告诉我"},
-        ]
+        examples = [ex.to_json() for ex in group_examples]
 
         example_prompt = ChatPromptTemplate.from_messages(
             [
@@ -64,54 +69,34 @@ class AgentService:
             [
                 ("system", self.system_template),
                 few_shot_prompt,
-                ("human", user_text),
-            ]
-        )
-
-        prompt = final_prompt.invoke({})
-
-        res = self.llm.invoke(prompt)
-        print(res)
-
-        return res.content
-
-    def question(self, question):
-        tools = [get_employee]
-        llm_with_tools = self.llm.bind_tools(tools)
-
-        final_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", self.system_template),
                 ("human", question),
+                MessagesPlaceholder(variable_name="agent_scratchpad")  # 关键：必须有这个占位符
             ]
         )
 
+        agent = create_tool_calling_agent(self.llm, tools, final_prompt)
 
-        chain = final_prompt | llm_with_tools | {
-            # 解析工具调用请求
-            "tool_calls": lambda msg: msg.tool_calls,
-            "messages": lambda _: []
-        } | RunnableLambda(execute_tool_calls)  # 执行工具
+        # 然后创建agent执行器
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-        res = chain.invoke({})
-
+        # 调用
+        res = agent_executor.invoke({
+            "currentDate":datetime.now().strftime("%Y-%m-%d"),
+            "input": question
+        })
         print(res)
-        return res
+        return res["output"]
 
 
-
-
-def create_agent(workplace:Workplace, work_group: WorkGroup) -> AgentService:
+def create_agent(workplace: Workplace, work_group: WorkGroup, session_id) -> AgentService:
     agent_service = AgentService(workplace, work_group)
-    if workplace.code not in agent_map:
-        agent_map[workplace.code] = {work_group.code: agent_service}
-    else :
-        agent_map[workplace.code][work_group.code] = agent_service
+
+    agent_map[f"{workplace.code}_{work_group.code}_{session_id}"] = agent_service
     return agent_service
 
 
-def get_agent(workplace_code, work_group_code) -> AgentService:
-    agent_service = agent_map[workplace_code][work_group_code]
+def get_agent(workplace_code, work_group_code, session_id) -> AgentService:
+    agent_service = agent_map[f"{workplace_code}_{work_group_code}_{session_id}"]
     return agent_service
 
 # 工具执行器
@@ -130,14 +115,4 @@ def execute_tool_calls(tool_calls):
     return results
 
 
-@tool
-def get_employee(employee_name, workplace_code, work_group_code):
-    """根据员工姓名，工作点编码，工作组编码查找员工信息，返回信息包括:
-    员工工号:number
-    员工姓名:name
-    """
-    res = http_get(f"/employee/findByInfo?workplaceCode={workplace_code}&workGroupCode={work_group_code}&employeeName={employee_name}")
-    data: dict[str, Any] = res["data"]
-    employee = Employee(data["name"], data["number"], data["workplaceCode"], data["workGroupCode"])
 
-    return employee.to_dict()
