@@ -2,15 +2,18 @@ import asyncio
 from typing import Any
 
 from flask import Blueprint, jsonify, request
-import json
 
+from app import app
 from model.response import success, failure
 from model.work_group import WorkGroup
 from service.workflow_service import create_workflow, get_workflow
 from util.http_util import http_get
 from model.workplace import Workplace
 
+
 agentApi = Blueprint('myAgent', __name__)
+# 注册蓝图
+
 
 
 # 定义一个路由，返回 JSON 数据

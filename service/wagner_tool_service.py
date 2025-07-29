@@ -27,7 +27,7 @@ def get_group_employee(workplace_code, work_group_code):
     list = []
     for data in iter(dataArray):
         employee = Employee(data["name"], data["number"], data["workplaceCode"], data["workGroupCode"])
-        list.append(employee.to_desc())
+        list.append(employee.to_desc() + " ")
 
     return list
 
@@ -52,11 +52,8 @@ def get_employee_efficiency(workplace_code, employee_number_list:list[str], oper
 
     desc = ""
     for d in data_list:
-        try:
-            employee_basic_summary = EmployeeBasicSummary.model_validate(d)
-            desc += employee_basic_summary.to_desc()
-        except Exception as e:
-            print(e)
+        employee_basic_summary = EmployeeBasicSummary.model_validate(d)
+        desc += employee_basic_summary.to_desc()
     return desc
 
 

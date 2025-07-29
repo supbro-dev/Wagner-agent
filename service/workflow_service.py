@@ -20,6 +20,7 @@ from langgraph.managed import IsLastStep
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Annotated
 
+from dao import ai_example_dao
 from model.work_group import WorkGroup
 from model.workplace import Workplace
 from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task, \
@@ -49,6 +50,10 @@ class State(InputState):
 
 def create_system_prompt(workplace, work_group):
     current_date = datetime_util.format_datatime(datetime.now())
+    example_key = f"{workplace.code}_{work_group.code}"
+    # example_list = ai_example_dao.find_by_key(example_key)
+    # print(example_list)
+
     return  (
         f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的组长助理，该小组的工作岗位是:{work_group.position_name}。"
         f"{workplace.name}的工作点编码是{workplace.code}，具体介绍是【{workplace.desc}】。"
@@ -56,7 +61,37 @@ def create_system_prompt(workplace, work_group):
         "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
         f"当用户提到相对日期（如'昨天'、'上周'）时，请将其转换为YYYY-MM-DD格式后再调用工具。当前日期是{current_date}"
         "所有需要根据工号查询的工具，都需要提前调用其他工具查询获取组员的工号"
-        "返回值用纯文本，不要使用Markdown格式")
+        "返回值用纯文本，不要使用Markdown格式"
+        """
+        1. 用户：用户的问题
+        2. 思考：根据对话历史和当前问题，思考需要做什么。
+        3. 行动：如果需要使用工具，请按照以下格式调用工具：
+            Action: 工具名称
+            Action Input: 工具的输入
+            Action Response: 工具的返回
+        4. 得到工具返回后，请将结果根据确定的格式返回给用户。
+        
+        以下是一些示例：
+
+        示例1：
+        用户：小组组员7.24工作效率是多少
+        思考：根据小组编码查询小组组员的工号，再根据工号、日期查询小组组员的工作效率
+        行动1：
+           Action: get_group_employee
+           Action Input: workplace_code=工作点编码, work_group_code=工作组编码
+           Action Response：姓名:张三，工号:B1010，所属工作点编码:某个确定的工作点编码，所属工作组编码:某个确定的工作组编码
+        行动2：
+           Action: get_employee_efficiency
+           Action Input: workplace_code=工作点编码, employee_number_list=员工工号(英文逗号分隔), operate_day具体日期(YYYY-MM-DD格式)
+           Action Response：
+               2025-07-24，张三在拣选环节上完成工作量{包裹数:60}, 工作1.5小时, 闲置2.5小时
+               2025-07-24，张三在质检环节上工作2.1小时, 闲置0.5小时
+           然后，当工具返回后，你只需要给用户返回（类似excel表头+数据）：
+               日期\t员工\t环节\t工作量\t工作工时(小时)\t休息工时(小时)\t闲置工时(小时)
+               2025-07-24\t张三\t拣选\t包裹数:60\t1.5\t\t2.5
+               2025-07-24\t张三\t之间\t\t2.1\t\t0.5
+        """
+    )
 
 
 class WorkflowService:
