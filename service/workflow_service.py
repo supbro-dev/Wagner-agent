@@ -22,7 +22,8 @@ from typing_extensions import Annotated
 
 from model.work_group import WorkGroup
 from model.workplace import Workplace
-from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task
+from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task, \
+    get_employee_efficiency
 from util import datetime_util
 from util.config_util import read_private_config
 
@@ -46,6 +47,17 @@ class State(InputState):
     is_last_step: IsLastStep = field(default=False)
 
 
+def create_system_prompt(workplace, work_group):
+    current_date = datetime_util.format_datatime(datetime.now())
+    return  (
+        f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的组长助理，该小组的工作岗位是:{work_group.position_name}。"
+        f"{workplace.name}的工作点编码是{workplace.code}，具体介绍是【{workplace.desc}】。"
+        f"你管理的小组的小组编码是:{work_group.code}，具体介绍是【{work_group.desc}】。"
+        "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
+        f"当用户提到相对日期（如'昨天'、'上周'）时，请将其转换为YYYY-MM-DD格式后再调用工具。当前日期是{current_date}"
+        "所有需要根据工号查询的工具，都需要提前调用其他工具查询获取组员的工号"
+        "返回值用纯文本，不要使用Markdown格式")
+
 
 class WorkflowService:
     def __init__(self, workplace: Workplace, work_group: WorkGroup):
@@ -65,24 +77,13 @@ class WorkflowService:
         )
 
         # 初始化系统提示词
-        self.system_prompt = self.create_system_prompt(workplace, work_group)
+        self.system_prompt = create_system_prompt(workplace, work_group)
 
         # 初始化工具列表
-        self.tool_list = [get_employee, get_group_employee, get_employee_time_on_task]
+        self.tool_list = [get_employee, get_group_employee, get_employee_time_on_task, get_employee_efficiency]
 
         # 初始化langGraph
         self.graph = self.create_graph()
-
-    def create_system_prompt(self, workplace, work_group):
-        current_date = datetime_util.format_datatime(datetime.now())
-        return  (
-            f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的组长助理，该小组的工作岗位是:{work_group.position_name}。"
-            f"{workplace.name}的工作点编码是{workplace.code}，具体介绍是【{workplace.desc}】。"
-            f"你管理的小组的小组编码是:{work_group.code}，具体介绍是【{work_group.desc}】。"
-            "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
-            f"当用户提到相对日期（如'昨天'、'上周'）时，请将其转换为YYYY-MM-DD格式后再调用工具。当前日期是{current_date}"
-            "所有需要根据工号查询的工具，都需要提前调用其他工具查询获取组员的工号"
-            "返回值用纯文本，不要使用Markdown格式")
 
     async def call_work_group_model(self, state: State) -> Dict[str, List[AIMessage]]:
         # Initialize the model with tool binding. Change the model or add more tools here.

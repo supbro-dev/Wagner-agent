@@ -1,20 +1,48 @@
 from typing import Dict
 
+from pydantic import BaseModel
+from pydantic.alias_generators import to_camel
 
-class EmployeeBasicSummary:
+
+class EmployeeBasicSummary(BaseModel):
     employee_number: str
     employee_name: str
     operate_day: str
     process_name: str
     position_name: str
     dept_name: str
-    direct_work_time: float  # 直接作业时长（秒）
-    indirect_work_time: float  # 间接作业时长（秒）
-    idle_time: float  # 闲置时长（秒）
-    rest_time: float # 休息时长（秒）
-    attendance_time: float  # 出勤时长（秒）
-    work_load: Dict[str, float] # 工作量编码 -> 工作量
+    direct_work_time: float  # 直接作业时长（小时）
+    indirect_work_time: float  # 间接作业时长（小时）
+    idle_time: float  # 闲置时长（小时）
+    rest_time: float # 休息时长（小时）
+    attendance_time: float  # 出勤时长（小时）
+    work_load_desc: Dict[str, float] |None # 工作量编码 -> 工作量
     idle_time_rate: float
+
+    class Config:
+        alias_generator = to_camel
+        populate_by_name = True
+
+    def to_desc(self):
+        if self.work_load_desc is not None:
+            desc = f"{self.operate_day}，{self.employee_name}在{self.process_name}环节上完成工作量{self.work_load_desc}，"
+        else:
+            desc = f"{self.operate_day}，{self.employee_name}在{self.process_name}环节上"
+
+        if self.direct_work_time > 0.0:
+            desc += f"工作{self.direct_work_time}小时"
+        elif self.indirect_work_time > 0.0:
+            desc += f"工作{self.indirect_work_time}小时"
+        elif self.rest_time > 0.0:
+            desc += f"休息{self.rest_time}小时"
+
+        if self.idle_time > 0.0:
+            desc += f" 闲置{self.idle_time}小时"
+        desc += "\n"
+
+        return desc
+
+
 
 class EmployeeSummary:
     employee_number: str

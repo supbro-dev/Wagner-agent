@@ -41,6 +41,11 @@ def handle_question():
     question = data.get('question')
 
     workflow_service = get_workflow(workplace_code, work_group_code)
+    if workflow_service is None:
+        workplace = get_workplace(workplace_code)
+        work_group = get_work_group(work_group_code, workplace_code)
+
+        workflow_service = create_workflow(workplace, work_group)
 
     content = asyncio.run(workflow_service.question(question, session_id))
 

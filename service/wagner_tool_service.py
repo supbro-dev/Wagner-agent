@@ -3,6 +3,7 @@ from typing import Any
 from langchain_core.tools import tool
 
 from model.employee import Employee
+from model.employee_efficiency_summary import EmployeeBasicSummary
 from model.time_on_task import TimeOnTask
 from util.http_util import http_get
 
@@ -45,9 +46,17 @@ def get_employee_time_on_task(operate_day, employee_number):
 def get_employee_efficiency(workplace_code, employee_number_list:list[str], operate_day):
     """根据工作点编码、人员工号列表、工作日日期(YYYY-MM-DD格式)获取当天全员的工作效率"""
     employee_numbers_str = ",".join(employee_number_list)
-    res = http_get(f"/efficiency/employeeEfficiency?workplaceCode={workplace_code}&startDate={operate_day}&endDate={operate_day}&employeeNumber={employee_numbers_str}&aggregateDimension=process&isCrossPosition=all&currentPage=1&pageSize=200")
+    res = http_get(f"/efficiency/employee?workplaceCode={workplace_code}&startDate={operate_day}&endDate={operate_day}&employeeNumber={employee_numbers_str}&aggregateDimension=process&isCrossPosition=all&currentPage=1&pageSize=200")
     data = res["data"]
-    dataList = data["tableDataList"]
+    data_list = data["tableDataList"]
 
-    # for d in dataList:
-    #     # EmployeeBasicSummary
+    desc = ""
+    for d in data_list:
+        try:
+            employee_basic_summary = EmployeeBasicSummary.model_validate(d)
+            desc += employee_basic_summary.to_desc()
+        except Exception as e:
+            print(e)
+    return desc
+
+
