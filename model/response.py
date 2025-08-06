@@ -1,6 +1,9 @@
 def success(data):
     return Res(0, data, "success")
 
+def failure(ex:Exception):
+    return Res(-1, ex.args, "failure")
+
 def failure():
     return Res(-1, "", "failure")
 

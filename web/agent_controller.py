@@ -3,13 +3,12 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from app import app
 from model.response import success, failure
 from model.work_group import WorkGroup
-from service.workflow_service import create_workflow, get_workflow
+from service.workflow_new_service import create_workflow, get_workflow, WorkflowService
 from util.http_util import http_get
 from model.workplace import Workplace
-
+from web.answer_vo import AnswerVo
 
 agentApi = Blueprint('myAgent', __name__)
 # 注册蓝图
@@ -43,16 +42,48 @@ def handle_question():
     session_id = data.get('sessionId')
     question = data.get('question')
 
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+
+    content = asyncio.run(workflow_service.question(question, session_id))
+    answer = AnswerVo("", content, "")
+
+    return jsonify(success(answer.to_dict()).to_dict())
+
+
+@agentApi.route('/train', methods=['POST'])
+def train():
+    if not request.is_json:
+        return jsonify(failure())
+
+    data = request.get_json()
+
+    workplace_code = data.get('workplaceCode')
+    work_group_code = data.get('workGroupCode')
+    session_id = data.get('sessionId')
+
+    human_msg_id = data.get('humanId')
+    human_content = data.get('humanContent')
+    ai_msg_id = data.get('aiId')
+    ai_content = data.get('aiContent')
+
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+
+    try:
+        workflow_service.train(session_id, human_msg_id, human_content, ai_msg_id, ai_content)
+        return jsonify(success("success").to_dict())
+    except Exception as e:
+        return jsonify(failure(e))
+
+
+
+def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowService:
     workflow_service = get_workflow(workplace_code, work_group_code)
     if workflow_service is None:
         workplace = get_workplace(workplace_code)
         work_group = get_work_group(work_group_code, workplace_code)
 
         workflow_service = create_workflow(workplace, work_group)
-
-    content = asyncio.run(workflow_service.question(question, session_id))
-
-    return jsonify(success(content).to_dict())
+    return workflow_service
 
 
 # 获取工作点

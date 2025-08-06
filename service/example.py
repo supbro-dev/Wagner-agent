@@ -1,20 +1,27 @@
+from typing import List, Dict
 
-class GroupLeaderExample:
+from pydantic import BaseModel, GetCoreSchemaHandler
+from pydantic_core import CoreSchema
 
-    def __init__(self, input, output):
-        self.input = input
-        self.output = output
+
+class ToolInvoke(BaseModel):
+    tool_name:str | None = None
+    invoke_args:Dict[str, str] | None = None
+    tool_res:str | None = None
+
+
+
+class ExampleTemplate:
+    # 使用的工具
+    use_tools:List[str] = []
+    # 用户输入
+    human_input:str
+    # ai输出
+    ai_output:str
+    # 工具调用完整信息
+    tool_invoke_list:List[ToolInvoke] = []
 
     def to_dict(self):
         return self.__dict__
 
-    def to_json(self):
-        return {
-            "input": {"input": self.input},
-            "output": {"output": self.output},
-        }
 
-
-group_examples = [
-    GroupLeaderExample("小组成员是？", "有3名组员，1.张三，工号:123。2.李四，工号:234。")
-]
