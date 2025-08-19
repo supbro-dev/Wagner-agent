@@ -1,11 +1,14 @@
-from init import db
+# 定义基类
+from sqlalchemy import BigInteger, Column, String
+from sqlalchemy.orm import declarative_base
 
+Base = declarative_base()
 
-class QueryDataTaskEntity(db.Model):
+class QueryDataTaskEntity(Base):
     __tablename__ = 'query_data_task'
 
-    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    business_key = db.Column(db.String)
-    name = db.Column(db.String)
-    task_detail = db.Column(db.String)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    business_key = Column(String)
+    name = Column(String)
+    task_detail = Column(String)
 

@@ -1,11 +1,18 @@
 import asyncio
+import json
+import queue
+import threading
+from queue import Queue
+from threading import Thread
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response, stream_with_context
+from flask import current_app
+from flask.ctx import AppContext
 
 from model.response import success, failure
 from model.work_group import WorkGroup
-from service.workflow_new_service import create_workflow, get_workflow, WorkflowService
+from service.workflow_new_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES
 from util.http_util import http_get
 from model.workplace import Workplace
 from web.answer_vo import AnswerVo
@@ -50,29 +57,52 @@ def handle_question():
     return jsonify(success(answer.to_dict()).to_dict())
 
 
-@agentApi.route('/train', methods=['POST'])
-def train():
-    if not request.is_json:
-        return jsonify(failure())
+# 流式回调处理器
+class StreamCallbackHandler:
+    def __init__(self):
+        self.tokens = []
 
-    data = request.get_json()
+    def on_llm_new_token(self, token: str) -> None:
+        self.tokens.append(token)
 
-    workplace_code = data.get('workplaceCode')
-    work_group_code = data.get('workGroupCode')
-    session_id = data.get('sessionId')
+# 流式路由
+@agentApi.route('/stream', methods=['GET'])
+def stream_response():
 
-    human_msg_id = data.get('humanId')
-    human_content = data.get('humanContent')
-    ai_msg_id = data.get('aiId')
-    ai_content = data.get('aiContent')
+    workplace_code = request.args.get('workplaceCode')
+    work_group_code = request.args.get('workGroupCode')
+    session_id = request.args.get('sessionId')
+    question = request.args.get('question')
 
     workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
 
-    try:
-        workflow_service.train(session_id, human_msg_id, human_content, ai_msg_id, ai_content)
-        return jsonify(success("success").to_dict())
-    except Exception as e:
-        return jsonify(failure(e))
+    def event_stream():
+
+        # 为每个请求创建专用队列
+        data_queue = queue.Queue()
+
+        def run_workflow():
+            try:
+                for chunk, dict in workflow_service.stream_question(question, session_id):
+                    if dict['langgraph_node'] in AI_CHAT_NODES:
+                        content = chunk.content
+                        data_queue.put({"token":content})
+            finally:
+                data_queue.put(None)
+
+        # 启动 LangGraph 线程
+        threading.Thread(target=run_workflow).start()
+
+        # 从队列获取数据并发送
+        while True:
+            data = data_queue.get()
+            if data is None:
+                yield "event: done\ndata: \n\n"
+                break
+            # 格式化为 SSE 事件
+            yield f"data: {json.dumps(data)}\n\n"
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 
 
