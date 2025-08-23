@@ -4,15 +4,16 @@ import queue
 import threading
 from queue import Queue
 from threading import Thread
-from typing import Any
+from typing import Any, cast
 
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 from flask import current_app
 from flask.ctx import AppContext
+from langchain_core.messages import AIMessage
 
 from model.response import success, failure
 from model.work_group import WorkGroup
-from service.workflow_new_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES
+from service.workflow_new_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES
 from util.http_util import http_get
 from model.workplace import Workplace
 from web.answer_vo import AnswerVo
@@ -52,18 +53,30 @@ def handle_question():
     workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
 
     content = asyncio.run(workflow_service.question(question, session_id))
-    answer = AnswerVo("", content, "")
+    answer = AnswerVo("", content)
 
     return jsonify(success(answer.to_dict()).to_dict())
 
 
-# 流式回调处理器
-class StreamCallbackHandler:
-    def __init__(self):
-        self.tokens = []
+@agentApi.route('/resumeInterrupt', methods=['POST'])
+def resume_interrupt():
+    if not request.is_json:
+        return jsonify(failure())
 
-    def on_llm_new_token(self, token: str) -> None:
-        self.tokens.append(token)
+    data = request.get_json()
+    workplace_code = data.get('workplaceCode')
+    work_group_code = data.get('workGroupCode')
+    session_id = data.get('sessionId')
+    resume_type = data.get('resumeType')
+
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+
+    res = workflow_service.resume(resume_type, session_id)
+
+    answer = AnswerVo("", res)
+
+    return jsonify(success(answer.to_dict()).to_dict())
+
 
 # 流式路由
 @agentApi.route('/stream', methods=['GET'])
@@ -83,10 +96,19 @@ def stream_response():
 
         def run_workflow():
             try:
-                for chunk, dict in workflow_service.stream_question(question, session_id):
-                    if dict['langgraph_node'] in AI_CHAT_NODES:
-                        content = chunk.content
-                        data_queue.put({"token":content})
+                for stream_mode, detail in workflow_service.stream_question(question, session_id):
+                    if stream_mode == "messages":
+                        chunk, metadata = detail
+                        if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            content = chunk.content
+                            data_queue.put({"token":content})
+                    elif stream_mode == "tasks":
+                        if "interrupts" in detail and len(detail["interrupts"]) > 0:
+                            data_queue.put({"interrupt":detail["interrupts"][0]})
+                        elif detail["name"] in AI_MSG_NODES:
+                            content = get_tasks_mode_ai_msg_content(detail)
+                            if content is not None:
+                                data_queue.put({"token":content})
             finally:
                 data_queue.put(None)
 
@@ -104,6 +126,16 @@ def stream_response():
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
+# 解析这个结构没想到更好的办法
+def get_tasks_mode_ai_msg_content(detail) -> str | None:
+    if "result" in detail:
+        msgs = detail["result"][0]
+        if msgs[0] == "messages":
+            msg_list = msgs[1]
+            for m in msg_list:
+                if m[0] == "ai":
+                    return m[1]
+    return None
 
 
 def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowService:
