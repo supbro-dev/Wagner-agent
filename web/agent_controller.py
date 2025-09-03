@@ -2,21 +2,18 @@ import asyncio
 import json
 import queue
 import threading
-from queue import Queue
-from threading import Thread
-from typing import Any, cast
+from typing import Any
 
 from flask import Blueprint, jsonify, request, Response, stream_with_context
-from flask import current_app
-from flask.ctx import AppContext
-from langchain_core.messages import AIMessage
 
 from model.response import success, failure
 from model.work_group import WorkGroup
-from service.workflow_new_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES
-from util.http_util import http_get
 from model.workplace import Workplace
+from service.workflow_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES, \
+    convert_2_interrupt
+from util.http_util import http_get
 from web.answer_vo import AnswerVo
+from web.result_vo import ResultVo
 
 agentApi = Blueprint('myAgent', __name__)
 # 注册蓝图
@@ -35,7 +32,7 @@ def welcome():
 
     create_workflow(workplace, work_group)
 
-    content = f"我是{work_group.name}的组长助理，有什么可以帮您？"
+    content = f"我是{work_group.name}的AI数据员，有什么可以帮您？"
     res = success(content)
     return jsonify(res.to_dict())
 
@@ -53,11 +50,11 @@ def handle_question():
     workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
 
     content = asyncio.run(workflow_service.question(question, session_id))
-    answer = AnswerVo("", content)
+    answer = AnswerVo(content=content)
 
-    return jsonify(success(answer.to_dict()).to_dict())
+    return jsonify(success(answer).to_dict())
 
-
+# 中断取消专用
 @agentApi.route('/resumeInterrupt', methods=['POST'])
 def resume_interrupt():
     if not request.is_json:
@@ -71,12 +68,71 @@ def resume_interrupt():
 
     workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
 
-    res = workflow_service.resume(resume_type, session_id)
+    content, interrupt = workflow_service.resume(resume_type, session_id)
 
-    answer = AnswerVo("", res)
+    answer = AnswerVo(content=content, interrupt=interrupt)
+    return jsonify(success(answer).to_dict())
 
-    return jsonify(success(answer.to_dict()).to_dict())
+@agentApi.route('/resumeInterruptStream', methods=['GET'])
+def resume_interrupt_stream():
+    workplace_code = request.args.get('workplaceCode')
+    work_group_code = request.args.get('workGroupCode')
+    session_id = request.args.get('sessionId')
+    resume_type = request.args.get('resumeType')
 
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+
+    def event_stream():
+
+        # 为每个请求创建专用队列
+        data_queue = queue.Queue()
+
+        def run_workflow():
+            try:
+                stream = workflow_service.resume_stream(resume_type, session_id)
+                for stream_mode, detail in stream:
+                    if stream_mode == "messages":
+                        # print("resume", stream_mode, detail)
+                        chunk, metadata = detail
+                        if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            content = chunk.content
+                            data_queue.put({"token": content})
+                    elif stream_mode == "tasks":
+                        # print("resume", stream_mode, detail)
+                        if "interrupts" in detail and len(detail["interrupts"]) > 0:
+                            data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
+                        elif detail["name"] in AI_MSG_NODES:
+                            content = get_tasks_mode_ai_msg_content(detail)
+                            if content is not None:
+                                data_queue.put({"token": content})
+            finally:
+                data_queue.put(None)
+
+        # 启动 LangGraph 线程
+        threading.Thread(target=run_workflow).start()
+
+        # 从队列获取数据并发送
+        while True:
+            data = data_queue.get()
+            if data is None:
+                yield "event: done\ndata: \n\n"
+                break
+            # 格式化为 SSE 事件
+            yield f"data: {json.dumps(data)}\n\n"
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+@agentApi.route('/getFrequentlyAndUsuallyExecuteTasks', methods=['GET'])
+def get_frequently_and_usually_execute_tasks():
+    workplace_code = request.args.get('workplaceCode')
+    work_group_code = request.args.get('workGroupCode')
+
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+
+    names = workflow_service.get_frequently_and_usually_execute_tasks()
+
+    result = ResultVo(result=list(names))
+    return jsonify(success(result).to_dict())
 
 # 流式路由
 @agentApi.route('/stream', methods=['GET'])
@@ -96,15 +152,18 @@ def stream_response():
 
         def run_workflow():
             try:
-                for stream_mode, detail in workflow_service.stream_question(question, session_id):
+                stream = workflow_service.stream_question(question, session_id)
+                for stream_mode, detail in stream:
                     if stream_mode == "messages":
                         chunk, metadata = detail
                         if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            # print("question", stream_mode, detail)
                             content = chunk.content
                             data_queue.put({"token":content})
                     elif stream_mode == "tasks":
+                        # print("question", stream_mode, detail)
                         if "interrupts" in detail and len(detail["interrupts"]) > 0:
-                            data_queue.put({"interrupt":detail["interrupts"][0]})
+                            data_queue.put({"interrupt":convert_2_interrupt(detail["interrupts"][0]).to_json()})
                         elif detail["name"] in AI_MSG_NODES:
                             content = get_tasks_mode_ai_msg_content(detail)
                             if content is not None:

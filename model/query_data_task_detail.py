@@ -5,8 +5,9 @@ from pydantic.alias_generators import to_camel
 
 class QueryDataTaskDetail(BaseModel):
 
-    target: str  # 任务意图
-    data_operation:str # 数据二次加工
+    target: str | None # 任务意图
+    query_param: str | None # 查询参数
+    data_operation:str | None # 数据二次加工
 
     class Config:
         alias_generator = to_camel
@@ -15,11 +16,13 @@ class QueryDataTaskDetail(BaseModel):
     def to_desc(self):
         return f"""
         任务的目标:{self.target}\n
+        查询参数:{self.query_param}\n
         获取到结果之后的数据加工逻辑:{self.data_operation}\n        
         """
 
     def to_dict(self):
-        return {
-            'target': self.target,
-            'data_operation': self.data_operation,
-        }
+        return self.model_dump(by_alias=True)
+
+    # 判断取数任务描述信息时完整的
+    def is_integrated(self)->bool:
+        return self.target is not None and self.data_operation is not None

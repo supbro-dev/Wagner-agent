@@ -1,46 +1,90 @@
-from __future__ import annotations
-
-import asyncio
-import os
+from typing import Callable, Any, List, Set
 import json
+import logging
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Annotated
-from typing import Dict, Literal
-from typing import List, Optional, cast
+from typing import Callable
+from typing import Literal
+from typing import Optional, cast
 from typing import Sequence
 
-from langchain.embeddings import init_embeddings
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain.output_parsers import OutputFixingParser
+from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage, BaseMessage
 from langchain_core.messages import AnyMessage
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, tool as create_tool
+from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.config import get_store
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
 from langgraph.graph import add_messages
-from langgraph.managed import IsLastStep
 from langgraph.prebuilt import ToolNode
-from langgraph.store.memory import InMemoryStore
+from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
+from langgraph.types import interrupt, Command, Interrupt
+from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 
-from dao import ai_example_dao
-from entity.ai_example_entity import AiExampleEntity
+from dao import query_data_task_dao
+from entity.query_data_task_entity import QueryDataTaskEntity
+from model.query_data_task_detail import QueryDataTaskDetail
 from model.work_group import WorkGroup
 from model.workplace import Workplace
-from service.example import ExampleTemplate, ToolInvoke
+from service.interrupt import WorkflowInterrupt
+from service.resume import WorkflowResume
 from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task, \
     get_employee_efficiency
 from util import datetime_util
 from util.config_util import read_private_config
 
+# 配置基础日志设置（输出到控制台）
+logging.basicConfig(
+    level=logging.INFO,  # 设置日志级别
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
 workflow_map = {}
 
+# 节点名称
+INTENT_CLASSIFIER = "intent_classifier" #意图探测节点，判断用户是希望创建/修改/执行取数任务，还是做其他不相关的事情
+FIND_TASK_IN_DB = "find_task_in_db" # 根据id或name从db中查找任务
+FIND_TASK_IN_STORE = "find_task_in_store" # 根据用户意图从向量数据库中查找任务
+SAME_NAME_WHEN_CREATE = "same_name_when_create" # 创建任务时查找到同名任务
+EXECUTE_TASK = "execute_task" # 根据id或name查找并执行任务
+CREATE_TASK = "create_task" # 创建一个新的取数任务
+EDIT_TASK = "edit_task" # 编辑任务信息时更新任务信息对象
+DELETE_TASK = "delete_task" # 逻辑删除任务
+TOOLS_FOR_TASK = "tools_for_task" # 所有数据查询工具，用来给EXECUTE_TASK节点执行任务
+QUERY_DATA_NODE = "query_data_node" # 用来调用工具做简单的数据查询
+TOOLS_FOR_QUERY_DATA = "tools_for_query_data" # 所有数据查询工具，用来给QUERY_DATA_NODE节点执行任务
+TOOLS_FOR_UPDATE_TASK = "tools_for_update_task" # 保存任务用的工具，包括人工审核
+TOOLS_FOR_DELETE_TASK = "tools_for_delete_task" # 删除任务用的工具，包括人工审核
+HOW_TO_IMPROVE_TASK = "how_to_improve_task" # 检查是否还需要用户进一步完善任务模板内容
+BEFORE_TEST_RUN_OR_SAVE = "before_test_run_or_save" # 中断前的空节点，避免重放流
+SAVE_TASK = "save_task" # 保存任务
+TEST_RUN_TASK= "test_run_task" # 试跑任务
+AFTER_EXECUTE_TASK = "after_execute_task"
 
-# NODE_NAMES
-CALL_MODEL = "call_model"
-TOOLS = "tools"
+
+
+# 记录有AI逐步返回token返回的节点
+AI_CHAT_NODES = [EXECUTE_TASK, QUERY_DATA_NODE, HOW_TO_IMPROVE_TASK, DELETE_TASK, TEST_RUN_TASK]
+# 记录人工构造AI MSG
+AI_MSG_NODES = [SAME_NAME_WHEN_CREATE]
+
+# 默认中断配置
+DEFAULT_INTERRUPT_CONFIG = {
+            "allow_accept": True,
+            "allow_edit": True,
+            "allow_respond": True,
+        }
+
 
 @dataclass
 class InputState:
@@ -49,89 +93,84 @@ class InputState:
         default_factory=list
     )
 
+QUERY_DATA: str = "query_data"
+EXECUTE: str = "execute"
+CREATE: str = "create"
+EDIT: str = "edit"
+DELETE: str = "delete"
+OTHERS: str = "others"
 
 @dataclass
 class State(InputState):
+    #用户请求的意图类型
+    intent_type: Literal[QUERY_DATA,EXECUTE,CREATE,EDIT,DELETE,OTHERS]|None = None
+    #取数任务的目的
+    target: str | None = None
+    #取数任务id
+    task_id: str|int = None
+    #取数任务名称
+    task_name: str |None = None
+    # 第一次创建任务
+    first_time_create: bool = True
+    #已经查找到的任务明细
+    task_detail: QueryDataTaskDetail = None
+    # 查询db或向量存储中的是否存在任务信息
+    is_task_existed :bool = False
 
-    is_last_step: IsLastStep = field(default=False)
 
 
-def create_system_prompt(workplace, work_group):
-    current_date = datetime_util.format_datatime(datetime.now())
 
-
-    example_key = f"{workplace.code}_{work_group.code}"
-    example_list = ai_example_dao.find_by_key(example_key)
-
-    example_str_list :List[str] = []
-    if len(example_list) > 0:
-        for example in example_list:
-            example_str_list.append(f"1. 用户提问：{example.human_message}")
-            if example.tool_message is not None:
-                example_str_list.append(f"2. 工具调用：{example.tool_message}")
-            if example.tool_detail is not None:
-                tool_detail_list = json.loads(example.tool_detail)
-                for i in range(len(tool_detail_list)):
-                    detail = tool_detail_list[i]
-                    example_str_list.append(f"行动{i + 1}")
-                    example_str_list.append(f"\tAction: {detail["tool_name"]}")
-                    example_str_list.append(f"\tAction Input: {detail["invoke_args"]}")
-                    example_str_list.append(f"\tAction Response: {detail["tool_res"]}")
-            if example.data_operation is not None:
-                example_str_list.append(f"4.数据加工逻辑: {example.data_operation}")
-            example_str_list.append(f"5. AI返回: {example.ai_message}")
-
-    example_template = "\n".join(example_str_list)
-
-    system_template = (
-        f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的组长助理，该小组的工作岗位是:{work_group.position_name}。"
-        f"{workplace.name}的工作点编码是{workplace.code}，具体介绍是【{workplace.desc}】。"
-        f"你管理的小组的小组编码是:{work_group.code}，具体介绍是【{work_group.desc}】。"
-        "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
-        f"当前日期是{current_date}"
-        "所有需要根据工号查询的工具，都需要提前调用其他工具查询获取组员的工号"
-        "解释一下一个特殊概念：AA问题。AA问题指的两个问题从语法上类似，可能都需要调用相同的工具，只是调用工具传入的参数不同"
-        """
-        1. 用户提问: 用户的问题
-        2. 工具调用: 调用了哪些工具
-        3. 行动: 如果需要使用了工具，会按照以下格式调用工具（可能有多条）
-            Action: 工具名称
-            Action Input: 工具的输入
-            Action Response: 工具的返回
-        4. 数据加工逻辑: 得到工具的返回之后需要怎么进行二次加工
-        5. AI返回: 加工之后的数据根据确定的格式返回给用户
-        
-        """
-        # """
-        #     以下是一些示例：
-        #
-        #     示例1：
-        #     用户：小组组员7.24工作效率是多少
-        #     思考：根据小组编码查询小组组员的工号，再根据工号、日期查询小组组员的工作效率
-        #     行动1：
-        #        Action: get_group_employee
-        #        Action Input: workplace_code=工作点编码, work_group_code=工作组编码
-        #        Action Response：姓名:张三，工号:B1010，所属工作点编码:某个确定的工作点编码，所属工作组编码:某个确定的工作组编码
-        #     行动2：
-        #        Action: get_employee_efficiency
-        #        Action Input: workplace_code=工作点编码, employee_number_list=员工工号(英文逗号分隔), operate_day具体日期(YYYY-MM-DD格式)
-        #        Action Response：
-        #            2025-07-24，张三在拣选环节上完成工作量{包裹数:60}, 工作1.5小时, 闲置2.5小时
-        #            2025-07-24，张三在质检环节上工作2.1小时, 闲置0.5小时
-        #        然后，当工具返回后，你只需要给用户返回（类似excel表头+数据）：
-        #            日期\t员工\t环节\t工作量\t工作工时(小时)\t休息工时(小时)\t闲置工时(小时)
-        #            2025-07-24\t张三\t拣选\t包裹数:60\t1.5\t\t2.5
-        #            2025-07-24\t张三\t之间\t\t2.1\t\t0.5
-        #     """
+# 定义意图分类规范
+class IntentSchema(BaseModel):
+    intent_type: Literal[QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS] = Field(
+        description="用户请求的核心意图类型"
+    )    
+    task_id: Optional[str] = Field(
+        default=None,
+        description="涉及的任务ID（如果是执行/编辑）"
     )
-    if len(example_str_list) > 0:
-        system_template += "以下是示例:\n"
-        system_template += example_template
-    return system_template
+    task_name: Optional[str] = Field(
+        default=None,
+        description="涉及的任务名称（如果是执行/新建/编辑）"
+    )
 
+
+# 任务的模板
+class TaskSchema(BaseModel):
+    target: Optional[str] = Field(
+        description="任务的目标"
+    )
+    query_param:  Optional[str] = Field(
+        default=None,
+        description="查询参数"
+    )
+    data_operation: Optional[str] = Field(
+        default=None,
+        description="调用工具后的加工逻辑"
+    )
+
+# 默认任务模板
+DEFAULT_TASK_TEMPLATE = QueryDataTaskDetail(
+        target="无。(请说明该任务的使用意图)",
+        query_param="无。(请索命该任务执行时需要使用哪些查询参数，例如查询日期为昨天)",
+        data_operation="无。(请详细描述，查询到结果之后希望进行哪些加工处理)"
+    )
+
+
+class CustomCallbackHandler(BaseCallbackHandler):
+    def on_chain_start(self, serialized, inputs, **kwargs):
+        print(f"开始执行: {serialized.get('name')}")
+
+    def on_chain_end(self, outputs, **kwargs):
+        print(f"执行完成，输出: {outputs}")
+
+    def on_chain_error(self, error, **kwargs):
+        print(f"执行错误: {error}")
 
 class WorkflowService:
     def __init__(self, workplace: Workplace, work_group: WorkGroup):
+        current_date = datetime_util.format_datatime(datetime.now())
+
         self.workplace = workplace
         self.work_group = work_group
 
@@ -150,193 +189,673 @@ class WorkflowService:
             api_key=api_key
         )
 
-        # 初始化系统提示词
-        self.system_prompt = create_system_prompt(workplace, work_group)
+        self.basic_system_template = (f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的数据员，该小组的工作岗位是:{work_group.position_name}。"
+        f"你所在的工作点为{workplace.name}，编码是：【{workplace.code}】，具体介绍是【{workplace.desc}】。你参与管理的小组，编码是【{work_group.code}】，具体介绍是【{work_group.desc}】。"
+        "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
+        f"当前日期是{current_date}")
 
-        # 初始化工具列表
-        self.tool_list = [get_employee, get_group_employee, get_employee_time_on_task, get_employee_efficiency]
+        # 设置业务用所有工具方法
+        self.tool_list = [get_employee, get_group_employee, get_employee_time_on_task, get_employee_efficiency, execute_once]
+
+        # 删除任务的工具
+        self.delete_task_tool_list = [add_human_in_the_loop(logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
 
         # 初始化langGraph
-        self.graph = self.create_graph("work_group_agent", use_memory = True)
-        self.train_graph = self.create_graph("train_agent")
+        self.graph = self.create_graph("work_group_agent")
 
 
-    async def call_work_group_model(self, state: State) -> Dict[str, List[AIMessage]]:
-        # Initialize the model with tool binding. Change the model or add more tools here.
-        model = self.llm.bind_tools(self.tool_list)
+    # NODES
+    def intent_classifier(self, state: State):
+        intent_prompt = ChatPromptTemplate.from_messages([
+            # 系统提示词
+            ("system", f"""{self.basic_system_template}
+            
+            你的职责是分析用户的意图，如果用户是提问查询某些数据，意图为“查询数据”，如果用户提到和任务相关，有可能是对任务进行创建/修改/删除/执行操作
+            
+            共有以下几种意图
+            1. {QUERY_DATA} - 查询数据  
+            2. {EXECUTE} - 执行某个任务
+            3. {CREATE} - 创建新任务
+            4. {EDIT} - 修改/编辑某个任务
+            5. {DELETE} - 删除某个任务
+            6. {OTHERS} - 既不查询数据也和任务操作无关            
+            
+            按JSON格式输出分类结果，只有当用户明确提及创建、执行或修改任务时才归类为相应意图，无关话题一律归类为OTHERS。
+            
+            **重要说明**: 以下示例仅用于展示分类逻辑，不是实际对话历史。
+                       """),
+            # 明确标识示例区
+            MessagesPlaceholder("examples", optional=True),
+            # 包含所有历史对话
+            *state.messages
+        ])
 
-        # Format the system prompt. Customize this to change the agent's behavior.
-        system_message = self.system_prompt
+        examples = [
+            # 使用few-shot示例（强调AI必须返回JsonOutputParser的格式，不加AI会尝试返回自然语言的KV）：
+            ("human", "执行本小组上个月的月度人效报告"),
+            ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"月度人效报告\"}"),
+            ("human", "运行本组上周的工时分析报表"),
+            ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"工时分析报表\"}"),
+            ("human", "创建一个工时分析报表，用来分析每天组内员工的工时分布"),
+            ("ai",
+             "{\"intent_type\": \"" + CREATE + "\", \"task_name\": \"工时分析报表\"}"),
+            ("human", "查一下员工工时信息"),
+            ("ai",
+             "{\"intent_type\": \"" + QUERY_DATA + "\"}"),
+        ]
 
-        # Get the model's response
-        response = cast(
-            AIMessage,
-            await model.ainvoke(
-                [{"role": "system", "content": system_message}, *state.messages]
-            ),
-        )
+        parser = JsonOutputParser(pydantic_object=IntentSchema)
+        parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
+        chain = intent_prompt | self.llm | parser_with_llm
 
-        # Handle the case when it's the last step and the model still wants to use a tool
-        if state.is_last_step and response.tool_calls:
+        result = chain.invoke({
+            "examples": examples,
+        })
+
+        # 更新状态
+        intent_type = result["intent_type"]
+
+        logging.info("推断出的intent_type:%s, result:%s", intent_type, result)
+
+        # 如果用户有明确意图且指定了任务名或任务id，才更新意图类型
+        if intent_type in [EXECUTE, CREATE, EDIT, DELETE] and ("task_name" in result or "task_id" in result):
+            state.intent_type = intent_type
+            if "task_id" in result:
+                state.task_id = result["task_id"]
+            if "task_name" in result:
+                state.task_name = result["task_name"]
+        elif intent_type == QUERY_DATA:
+            state.intent_type = intent_type
+        elif intent_type == OTHERS and  ("task_name" not in result and "task_id" not in result):
+            state.intent_type = intent_type
+
+        return state
+
+
+    def find_task_in_db(self, state: State):
+        query_data_task = find_task_by_id_or_name(state.task_id, state.task_name, self.workplace.code, self.work_group.code)
+
+        if query_data_task is not None:
+            state.is_task_existed = True
+
+            detail = QueryDataTaskDetail.model_validate(json.loads(query_data_task.task_detail))
+            state.task_name = query_data_task.name
+            state.task_id = query_data_task.id
+            state.task_detail = detail
+            return state
+        else:
+            return state
+
+    def find_task_in_store(self, state:State):
+        return state
+
+    # 调用工具执行任务
+    def execute_task(self, state:State):
+        all_messages = state.messages
+
+        # 如果是工具返回后的再次调用
+        if isinstance(all_messages[-1], ToolMessage):
+            # 使用完整的对话历史作为上下文
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                {self.basic_system_template}
+
+                任务ID:{state.task_id}                
+                任务详情:
+                {state.task_detail}
+                
+                """),
+                *all_messages  # 包含所有历史消息
+            ])
+            chain = prompt | self.llm.bind_tools(self.tool_list)
+            response = chain.invoke({})
             return {
-                "messages": [
-                    AIMessage(
-                        id=response.id,
-                        content="Sorry, I could not find an answer to your question in the specified number of steps.",
-                    )
-                ]
+                "messages": [response],
+            }
+        else:
+            last_human_message = state.messages[-1].content
+
+            # 初次调用，使用原始用户查询
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                {self.basic_system_template}
+
+                任务ID:{state.task_id}
+                                
+                任务详情:
+                {state.task_detail.to_desc()}
+                
+                注意：每次执行完任务的最后，一定要调用工具，传入任务id，把任务的执行次数加1
+                """
+                              ),
+                HumanMessage(content="{user_input}")  # 用户最后一条消息
+            ])
+
+            chain = prompt | self.llm.bind_tools(self.tool_list)
+            response = chain.invoke({"user_input": last_human_message})
+            return {
+                "messages": [response],
             }
 
-        # Return the model's response as a list to be added to existing messages
-        return {"messages": [response]}
-
-    # 创建Graph
-    def create_graph(self, graph_name, use_memory:bool = False):
-        builder = StateGraph(State, input_schema=InputState)
 
 
-        builder.add_node(CALL_MODEL, self.call_work_group_model)
-        builder.add_node(TOOLS, ToolNode(self.tool_list))
+    # 调用工具查询数据
+    def query_data(self, state: State):
+        all_messages = state.messages
 
-        builder.add_edge(START, CALL_MODEL)
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=f"{self.basic_system_template}"),
+            *all_messages  # 包含所有历史消息
+        ])
+        chain = prompt | self.llm.bind_tools(self.tool_list)
+        response = chain.invoke({})
+
+        return {
+            "messages": [response],
+        }
+
+    def same_name_when_create(self, state:State):
+        response = ("ai", f"查找到与【{state.task_name}】同名任务，是否修改该任务？")
+        return {
+            "messages": [cast(AIMessage, response)],
+        }
+
+    def edit_task(self, state: State):
+        parser = JsonOutputParser(pydantic_object=TaskSchema)
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", f"""
+                       {self.basic_system_template}
+
+                       现在你要解析用户的输入，按JSON格式输出用户给出的模板内容。
+                       
+                       任务id:{state.task_id}
+                       任务名称:{state.task_name}
+
+                       任务模板信息（解释任务信息中的每个字段的含义）:
+                       {DEFAULT_TASK_TEMPLATE.to_desc()}
+                       
+                       当前任务信息:
+                       {state.task_detail.to_desc()}
+
+                       **重要说明**: 以下示例仅用于展示从用户输入中提取任务信息并按json格式返回操作，并不是实际对话历史
+                       """),
+            # 明确标识示例区
+            MessagesPlaceholder("examples", optional=True),
+            # 包含历史所有对话
+            *state.messages
+        ])
+
+        examples = [
+            ("human", "任务的目标：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
+            ("ai",
+             "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
+        ]
+
+        chain = prompt | self.llm | parser
+        response = chain.invoke({
+            "examples": examples,
+        })
+
+        task_detail = QueryDataTaskDetail.model_validate(response)
+
+        if state.task_detail.to_dict() != task_detail.to_dict():
+            state.task_detail = task_detail
+        return state
 
 
-        builder.add_conditional_edges(
-            CALL_MODEL,
+    def delete_task(self, state:State):
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=f"""
+                                   {self.basic_system_template}
+                                   你现在要做的事情是删除取数任务
+                                   
+                                   取数任务的模板如下：
+                                   {DEFAULT_TASK_TEMPLATE.to_desc()}
+                                   
+                                   已有的取数任务如下：
+                                   任务id：{state.task_id}
+                                   任务名称：{state.task_name}
+                                   {state.task_detail.to_desc()}
+                                   
+                                   具体事项：
+                                   1.首先给用户展示任务内容
+                                   2.调用工具删除任务
+                                   
+                                   注意:任务id不要透露给用户
+                                   """),
+            *state.messages])
 
-            self.route_model_output,
-        )
+        chain = prompt | self.llm.bind_tools(self.delete_task_tool_list)
 
-        # Add a normal edge from `tools` to `call_model`
-        # This creates a cycle: after using tools, we always return to the model
-        builder.add_edge(TOOLS, CALL_MODEL)
+        response = chain.invoke({})
 
-        # Compile the builder into an executable graph
-        if use_memory:
-            # 记忆功能
-            memory = InMemorySaver()
-            graph = builder.compile(name=graph_name, checkpointer = memory)
+        return {
+            "messages": [response],
+        }
+
+    # 解析用户输入中对任务模板的补充
+    def create_task(self, state:State):
+        task_name = state.task_name
+
+        if state.first_time_create:
+            state.first_time_create = False
+            return state
         else:
-            graph = builder.compile(name=graph_name)
+            # 后续根据用户提示信息更新模板
+            parser = JsonOutputParser(pydantic_object=TaskSchema)
 
-        return graph
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"""
+                {self.basic_system_template}
+                
+                现在你要解析用户的输入把以下任务模板填写完整
+                任务模板如下
+                
+                任务名称：{task_name}
+                {DEFAULT_TASK_TEMPLATE.to_desc()}            
+                
+                用户给你的输入参考任务模板解析之后，按JSON格式输出用户给出的模板内容。
+                **重要说明**: 以下示例仅用于展示维护任务模板的问答逻辑，不是实际对话历史
+                """),
+                # 明确标识示例区
+                MessagesPlaceholder("examples", optional=True),
+                # 包含历史所有对话
+                *state.messages
+            ])
 
-    async def question(self, query, session_id) -> (str, str, str):
-        # 上下文配置
-        config = {"configurable": {"thread_id": session_id}}
+            examples = [
+                ("human", "任务的目标：每日工作效率统计。数据加工逻辑：单加一列：工作量除以工作时长为工作效率"),
+                ("ai", "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
+            ]
 
-        res = await self.graph.ainvoke(
-            input = {"messages": [("user", query)]},
-            config = config,
+            chain = prompt | self.llm| parser
+            response = chain.invoke({
+               "examples": examples,
+            })
+
+            task_detail = QueryDataTaskDetail.model_validate(response)
+
+            state.task_detail = task_detail
+
+            return state
+
+    # 保存任务
+    # 为什么不使用llm调用tool的方式保存？因为是使用resume_stream的方式调用到该节点的，这种方式没法把llm的输出by token返回
+    def save_task(self, state:State):
+        business_key = f"{self.workplace.code}_{self.work_group.code}"
+
+        entity = QueryDataTaskEntity(
+            name=state.task_name,
+            business_key=business_key,
+            task_detail=json.dumps(state.task_detail.to_dict(), ensure_ascii=False)
         )
 
-        result = res["messages"][-1]
-        content = str(result.content)
-        id = str(result.id)
+        if state.task_id is not None:
+            entity.id = state.task_id
+            id = query_data_task_dao.save(entity)
+        else:
+            id = query_data_task_dao.save(entity)
 
-        if content == "":
-            print("content is empty:", result)
-
-        last_human_message_id = 0
-        for i in range(len(res["messages"]) - 1, -1, -1):
-            message = res["messages"][i]
-            if isinstance(message, HumanMessage):
-                last_human_message_id = message.id
-                break
-
-        return content, id, last_human_message_id
-
-    # 是否为第一次提问的标识
-    IS_ASK_SAME_QUESTION_BEFORE_FLAG = "N"
-
-    # 训练AI助手
-    def train(self, session_id, human_msg_id, human_content, ai_msg_id, ai_content):
-        # 上下文配置
-        config = {"configurable": {"thread_id": session_id}}
-        state = self.graph.get_state(config = config)
-
-        messages = state.values["messages"]
-
-        # is_same, _, _ = asyncio.run(self.question(
-        #     f"我提的这个问题:{human_content}\n之前我是否也提问这个问题的AA问题?",
-        #     session_id))
-        #
-        # print(is_same)
-
-        is_first_question_str, _, _ = asyncio.run(self.question(f"我提的这个问题:{human_content}\n之前我是否提问这个问题的AA问题？如果没提问过，请回答{self.IS_ASK_SAME_QUESTION_BEFORE_FLAG}；如果提问过，告诉我从第一次提出该AA问题，到你最终回答:{ai_content}\n中间的加工逻辑用简短语言概括一下。", session_id))
-
-        is_first_question = is_first_question_str != self.IS_ASK_SAME_QUESTION_BEFORE_FLAG
-
-        # 如果只提问了一次相关问题
-        if is_first_question:
-            example_template = self.__handle_invoke_once(messages, human_msg_id, ai_msg_id)
-            self.__save_example(example_template)
-
-    def __handle_invoke_once(self, messages, human_msg_id, ai_msg_id) -> ExampleTemplate:
-        example_template = ExampleTemplate()
-        tool_invoke = ToolInvoke()
-        for i in range(len(messages)):
-            message = messages[i]
-            if isinstance(message, HumanMessage) and message.id == human_msg_id:
-                example_template.human_input = message.content
-            elif isinstance(message, AIMessage) and message.id == ai_msg_id:
-                example_template.ai_output = message.content
-                # 遍历到ai_msg_id直接退出
-                break
-            else:# 处理调用tool和toolMessage
-                # 工具调用
-                if isinstance(message, AIMessage):
-                    tool_name = message.tool_calls[0]["name"]
-                    tool_invoke.tool_name = tool_name
-                    tool_invoke.invoke_args = message.tool_calls[0]["args"]
-                    example_template.use_tools.append(tool_name)
-                # 如果已经遍历了human_msg_id
-                if example_template.human_input != "" and isinstance(message, ToolMessage):
-                    tool_invoke.tool_res = message.content
-                    example_template.tool_invoke_list.append(tool_invoke)
-                    tool_invoke = ToolInvoke()
-
-        return example_template
+        return {
+            "task_id": id,
+            "query_data_task": True,
+            "intent_type": EDIT,
+            "messages": [("ai", f"{state.task_name}保存成功")]
+        }
 
 
+    def test_run_task(self, state:State):
+        all_messages = state.messages
+
+        # 如果是工具返回后的再次调用
+        if isinstance(all_messages[-1], ToolMessage):
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                {self.basic_system_template}
+                你的职责是调用工具执行以下任务：
+                
+                任务名称：{state.task_name}
+                {state.task_detail.to_desc()}
+                
+                如果你所用到的工具的参数涉及到日期，默认查询当前时间的前一天
+                
+                只用返回按用户要求进行数据加工之后的结果。
+                
+                """),
+                *all_messages  # 包含所有历史消息
+            ])
+
+            chain = prompt | self.llm.bind_tools(self.tool_list)
+            response = chain.invoke({})
+        else:
+            # 与工具返回后的调用区别在于，这里不传所有历史信息
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                           {self.basic_system_template}
+                           你的职责是调用工具执行以下任务：
+
+                           任务名称：{state.task_name}
+                           {state.task_detail.to_desc()}
+
+                           如果你所用到的工具的参数涉及到日期，默认查询当前时间的前一天
+
+                           只用返回按用户要求进行数据加工之后的结果。
+
+                           """),
+            ])
+            chain = prompt | self.llm.bind_tools(self.tool_list)
+            response = chain.invoke({})
+
+        return {
+            "messages": [response],
+            }
 
 
-    def __save_example(self, example_template: ExampleTemplate):
-        example_key = f"{self.workplace.code}_{self.work_group.code}"
+    # 在用户更新任务模板的过程中，对比模板是否填写完善
+    def how_to_improve_task(self, state:State):
+        if state.task_detail is None or not state.task_detail.is_integrated():
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                            {self.basic_system_template}
+                            你的职责是对比：
+                            任务模板：
+                            {DEFAULT_TASK_TEMPLATE.to_desc()}
+                            当前任务信息：
+                            {"无" if state.task_detail is None else state.task_detail.to_desc()}
+                            
+                            这两者之间的差别。
+                            提示用户模板里还有哪些内容是需要填写的，如果确认用户已经全部填写完成，请询问用户是否进行任务的试算或保存。
+                            """),
+                *state.messages])
 
-        list = ai_example_dao.find_by_key(example_key)
+            chain = prompt | self.llm
+        else:
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                                        {self.basic_system_template}
+                                        
+                                        以下是用户填写的任务信息                                        
+                                        任务名称:{state.task_name}
+                                        {state.task_detail.to_desc()}
 
-        max_sort_index = 0
-        for ex in list:
-            max_sort_index = max(max_sort_index, ex.sort_index)
+                                        你的职责是向用户简单、准确的展示任务的名称及任务的详情（而不是真正执行任务）。之后询问用户是否需要补充，或者进行任务的试算或保存
+                                        """),
+                *state.messages])
 
-        entity = AiExampleEntity()
-        entity.key = example_key
-        entity.human_message = example_template.human_input
-        entity.ai_message = example_template.ai_output
-        entity.tool_message = example_template.use_tools
+            chain = prompt | self.llm
 
-        detail_array = json.dumps(
-            [detail.model_dump() for detail in example_template.tool_invoke_list],
-            indent=2
-        )
-        entity.tool_detail = detail_array
-        entity.sort_index = max_sort_index + 1
+        response = chain.invoke({})
 
-        ai_example_dao.insert(entity)
+        return {
+            "messages": [response],
+        }
+
+    def before_test_run_or_save(self, state: State):
+        """
+        空节点，避免中断恢复后重新执行前一个节点的流式输出
+        :param state:
+        :return:
+        """
+        return state
+
+    # EDGES
+    def intent_classifier_to_next(self, state: State) -> Literal[FIND_TASK_IN_DB, CREATE_TASK, QUERY_DATA_NODE, END]:
+        if state.intent_type == OTHERS:
+            return QUERY_DATA_NODE
+        elif state.intent_type in [EXECUTE, EDIT, CREATE, DELETE]:
+            return FIND_TASK_IN_DB
+        elif state.intent_type == QUERY_DATA:
+            return QUERY_DATA_NODE
+        else:
+            return END
+
+    def check_exist_and_next_node(self, state:State) -> Literal[FIND_TASK_IN_STORE, SAME_NAME_WHEN_CREATE, DELETE_TASK, EXECUTE_TASK, EDIT_TASK, END]:
+        if not state.is_task_existed:
+            return FIND_TASK_IN_STORE
+        else:
+            if state.intent_type == CREATE:
+                return SAME_NAME_WHEN_CREATE
+            elif state.intent_type == EXECUTE:
+                return EXECUTE_TASK
+            elif state.intent_type == EDIT:
+                return EDIT_TASK
+            elif state.intent_type == DELETE:
+                return DELETE_TASK
+            else:
+                return END
+
+    def check_exist_in_store_and_next_node(self, state:State) -> Literal[SAME_NAME_WHEN_CREATE, DELETE_TASK, EXECUTE_TASK, CREATE_TASK, EDIT_TASK, END]:
+        if not state.is_task_existed:
+            if state.intent_type == CREATE:
+                return CREATE_TASK
+            elif state.intent_type == EXECUTE:
+                return CREATE_TASK
+            elif state.intent_type == EDIT:
+                return CREATE_TASK
+            elif state.intent_type == DELETE:
+                return CREATE_TASK
+            else:
+                return END
+        else:
+            if state.intent_type == CREATE:
+                return SAME_NAME_WHEN_CREATE
+            elif state.intent_type == EXECUTE:
+                return EXECUTE_TASK
+            elif state.intent_type == EDIT:
+                return EDIT_TASK
+            elif state.intent_type == DELETE:
+                return DELETE_TASK
+            else:
+                return END
 
 
-    def route_model_output(self, state: State) -> Literal[END, TOOLS]:
+
+    def need_invoke_tool(self, state:State) -> Literal[TOOLS_FOR_TASK, TOOLS_FOR_QUERY_DATA, HOW_TO_IMPROVE_TASK, SAVE_TASK, TEST_RUN_TASK, END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
                 f"Expected AIMessage in output edges, but got {type(last_message).__name__}"
             )
-        # If there is no tool call, then we finish
+
+        if not last_message.tool_calls:
+            # 如果任务已经执行完毕，再次循环到试跑/保存的中断
+            if state.intent_type == EDIT or state.intent_type == CREATE:
+                return self.handle_integrated_task(state)
+            # elif state.intent_type == EXECUTE:
+            #     return AFTER_EXECUTE_TASK
+            else:
+                return END
+        elif state.intent_type == EXECUTE:
+            return TOOLS_FOR_TASK
+        elif state.intent_type == QUERY_DATA or state.intent_type == OTHERS:
+            return TOOLS_FOR_QUERY_DATA
+        elif state.intent_type == EDIT or state.intent_type == CREATE:
+            return TOOLS_FOR_TASK
+        else:
+            return END
+
+    def after_invoke_tool(self, state:State)-> Literal[EXECUTE_TASK, TEST_RUN_TASK, END]:
+        if state.intent_type == EXECUTE:
+            return EXECUTE_TASK
+        elif state.intent_type == EDIT or state.intent_type == CREATE:
+            return TEST_RUN_TASK
+        else:
+            return END
+
+    def handle_integrated_task(self, state:State) -> Literal[SAVE_TASK, TEST_RUN_TASK,END]:
+        if state.task_detail is not None and state.task_detail.is_integrated():
+            request: HumanInterrupt = {
+                "action_request": {
+                    "action": 'handle_integrated_task',
+                    "args":{
+                        "task_name":state.task_name,
+                        "confirm_option_list":[WorkflowResume(resume_type="testRun", resume_desc="试跑", resume_mode="stream"), WorkflowResume(resume_type="save", resume_desc="保存", resume_mode="invoke")]
+                    }
+                },
+                "config": DEFAULT_INTERRUPT_CONFIG,
+                "description": "任务信息已填写完整，请问接下来希望进行哪一步操作?"
+            }
+            response = interrupt(request)[0]
+            if response["resumeType"] == "save":
+                return SAVE_TASK
+            elif response["resumeType"] == "testRun":
+                return TEST_RUN_TASK
+            elif response["resumeType"] == "cancel":
+                return END
+        else:
+            return END
+
+
+    def need_invoke_delete_task_tool(self, state: State) -> Literal[TOOLS_FOR_DELETE_TASK, END]:
+        last_message = state.messages[-1]
+        if not isinstance(last_message, AIMessage):
+            raise ValueError(
+                f"Expected AIMessage in output edges, but got {type(last_message).__name__}"
+            )
+
         if not last_message.tool_calls:
             return END
-        # Otherwise we execute the requested actions
-        return TOOLS
+        else:
+            return TOOLS_FOR_DELETE_TASK
+
+
+    # 创建Graph
+    def create_graph(self, graph_name):
+        builder = StateGraph(State, input_schema=InputState)
+        # 新Graph
+        builder.add_node(INTENT_CLASSIFIER, self.intent_classifier)
+        builder.add_node(QUERY_DATA_NODE, self.query_data)
+        builder.add_node(FIND_TASK_IN_DB, self.find_task_in_db)
+        builder.add_node(FIND_TASK_IN_STORE, self.find_task_in_store)
+        builder.add_node(EXECUTE_TASK, self.execute_task)
+        builder.add_node(CREATE_TASK, self.create_task)
+        builder.add_node(TOOLS_FOR_TASK, ToolNode(self.tool_list))
+        builder.add_node(TOOLS_FOR_QUERY_DATA, ToolNode(self.tool_list))
+        builder.add_node(HOW_TO_IMPROVE_TASK, self.how_to_improve_task)
+        builder.add_node(SAME_NAME_WHEN_CREATE, self.same_name_when_create)
+        builder.add_node(DELETE_TASK, self.delete_task)
+        builder.add_node(EDIT_TASK, self.edit_task)
+        builder.add_node(TOOLS_FOR_DELETE_TASK, ToolNode(self.delete_task_tool_list))
+        builder.add_node(TEST_RUN_TASK, self.test_run_task)
+        builder.add_node(SAVE_TASK, self.save_task)
+        builder.add_node(BEFORE_TEST_RUN_OR_SAVE, self.before_test_run_or_save)
+
+        # 起始节点，判断意图
+        builder.add_edge(START, INTENT_CLASSIFIER)
+        builder.add_conditional_edges(INTENT_CLASSIFIER, self.intent_classifier_to_next)
+        builder.add_conditional_edges(FIND_TASK_IN_DB, self.check_exist_and_next_node)
+        builder.add_conditional_edges(FIND_TASK_IN_STORE, self.check_exist_in_store_and_next_node)
+        builder.add_conditional_edges(TOOLS_FOR_TASK, self.after_invoke_tool)
+        builder.add_edge(TOOLS_FOR_QUERY_DATA, QUERY_DATA_NODE)
+        builder.add_conditional_edges(EXECUTE_TASK, self.need_invoke_tool)
+        builder.add_conditional_edges(QUERY_DATA_NODE, self.need_invoke_tool)
+        builder.add_edge(CREATE_TASK, HOW_TO_IMPROVE_TASK)
+        builder.add_edge(HOW_TO_IMPROVE_TASK, BEFORE_TEST_RUN_OR_SAVE)
+        builder.add_conditional_edges(BEFORE_TEST_RUN_OR_SAVE, self.handle_integrated_task)
+        builder.add_edge(SAME_NAME_WHEN_CREATE, END)
+        builder.add_edge(EDIT_TASK, HOW_TO_IMPROVE_TASK)
+        builder.add_conditional_edges(DELETE_TASK, self.need_invoke_delete_task_tool)
+        builder.add_conditional_edges(TEST_RUN_TASK, self.need_invoke_tool)
+        builder.add_edge(SAVE_TASK, END)
+
+
+        # 记忆功能
+        memory = InMemorySaver()
+        graph = builder.compile(name=graph_name, checkpointer=memory)
+
+        try:
+            print(graph.get_graph().draw_ascii())
+        except Exception:
+            # This requires some extra dependencies and is optional
+            pass
+
+        return graph
+
+    def stream_question(self, query, session_id):
+        # 使用回调
+        handler = CustomCallbackHandler()
+
+        # 上下文配置
+        config = RunnableConfig(
+            configurable= {"thread_id": session_id},
+            callbacks = CallbackManager([handler])
+        )
+
+        stream = self.graph.stream(
+            input = InputState(messages=[("user", query)]),
+            config = config,
+            stream_mode=["messages", "tasks"]
+           )
+
+        return stream
+
+
+
+    async def question(self, query, session_id) -> str:
+        # 上下文配置
+        config = RunnableConfig(
+            configurable={"thread_id": session_id},
+        )
+
+        res = await self.graph.ainvoke(
+            input = InputState(messages=[("user", query)]),
+            config = config,
+        )
+
+        result = res["messages"][-1]
+        content = str(result.content)
+
+        if content == "":
+            print("content is empty:", result)
+
+        return content
+
+    def resume(self, resume_type, session_id) -> (str ,WorkflowInterrupt):
+        # 上下文配置
+        config = {"configurable": {"thread_id": session_id}}
+
+        res = self.graph.invoke(
+            Command(resume=[{"resumeType": resume_type}]),
+            config = config,
+        )
+
+        # 如果是中断
+        if "__interrupt__" in res:
+            return None, convert_2_interrupt(res["__interrupt__"][0])
+        else:
+            last_msg = res["messages"][-1]
+            return last_msg.content, None
+
+
+    def resume_stream(self, resume_type, session_id):
+        # 上下文配置
+        config = RunnableConfig(
+            configurable={"thread_id": session_id},
+        )
+
+        stream = self.graph.stream(input = Command(resume=[{"resumeType": resume_type}]),
+                                   config=config,
+                                   stream_mode=["messages", "tasks"])
+
+        return stream
+
+    def get_frequently_and_usually_execute_tasks(self) -> set[str]:
+        business_key = f"{self.workplace.code}_{self.work_group.code}"
+        usually_execute_tasks = query_data_task_dao.get_usually_execute_top3_tasks(business_key)
+
+        names = set()
+        not_in_ids = []
+        for t in usually_execute_tasks:
+            names.add(t.name)
+            not_in_ids.append(t.id)
+
+        frequently_execute_tasks = query_data_task_dao.get_frequently_execute_top3_tasks(business_key, not_in_ids)
+
+        for t in frequently_execute_tasks:
+            names.add(t.name)
+
+        return names
 
 
 def create_workflow(workplace: Workplace, work_group: WorkGroup) -> WorkflowService:
@@ -348,3 +867,116 @@ def create_workflow(workplace: Workplace, work_group: WorkGroup) -> WorkflowServ
 def get_workflow(workplace_code, work_group_code) -> WorkflowService:
     workflow_service = workflow_map[f"{workplace_code}_{work_group_code}"]
     return workflow_service
+
+def convert_2_interrupt(interrupt: Interrupt|dict) -> WorkflowInterrupt:
+    if isinstance(interrupt, dict):
+        value = interrupt["value"]
+    else:
+        value = interrupt.value
+
+    args: dict = value["action_request"]["args"]
+
+    workflow_interrupt = WorkflowInterrupt(
+        action=value["action_request"]["action"],
+        description=value["description"],
+        confirm_option_list=args["confirm_option_list"],
+        task_name=args["task_name"],
+    )
+
+    return workflow_interrupt
+
+
+def find_task_by_id_or_name(task_id:int, task_name:str|None, workplace_code:str, work_group_code:str) -> QueryDataTaskEntity:
+    """
+    根据按优先级根据task_id,task_name查询db中的任务对象
+    :param task_id:
+    :param task_name:
+    :param workplace_code:
+    :param work_group_code:
+    :return: 任务对象
+    """
+    if task_id is not None:
+        entity = query_data_task_dao.find_by_id(task_id)
+    elif task_name is not None:
+        business_key = f"{workplace_code}_{work_group_code}"
+        entity = query_data_task_dao.find_by_name(business_key, task_name)
+    else:
+        entity = None
+
+    return entity
+
+
+
+def add_human_in_the_loop(
+    tool: Callable | BaseTool,
+    confirm_option_list:List[WorkflowResume],
+    tool_input_2_desc: Callable[[{}], str],
+    interrupt_config: HumanInterruptConfig = None,
+) -> BaseTool:
+    """Wrap a tool to support human-in-the-loop review."""
+    if not isinstance(tool, BaseTool):
+        tool = create_tool(tool)
+
+    if interrupt_config is None:
+        interrupt_config = DEFAULT_INTERRUPT_CONFIG
+
+    @create_tool(
+        tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema
+    )
+    def call_tool_with_interrupt(config: RunnableConfig, **tool_input):
+        start = int(time.time())
+        print(f"call_tool_with_interrupt从：{start}开始执行")
+        args = {**tool_input, "confirm_option_list": confirm_option_list}
+
+        request: HumanInterrupt = {
+            "action_request": {
+                "action": tool.name,
+                "args": args,
+            },
+            "config": interrupt_config,
+            "description": tool_input_2_desc(tool_input)
+        }
+        response = interrupt(request)[0]
+
+        if response["resumeType"] == "accept":
+            tool_response = tool.invoke(tool_input, config)
+        elif response["resumeType"] == "cancel":
+            tool_response = "取消调用"
+        else:
+            raise ValueError(f"Unsupported interrupt response type: {response['type']}")
+
+        return tool_response
+
+    return call_tool_with_interrupt
+
+
+@tool
+def logical_delete_task(id:int, task_name, workplace_code, work_group_code):
+    """
+       删除任务信息，结果返回是否删除成功
+
+       输入参数：
+       id：任务唯一id
+       task_name：任务名称
+       workplace_code：工作点编码
+       work_group_code：工作组编码
+   """
+    business_key = f"{workplace_code}_{work_group_code}"
+    query_data_task_dao.delete(id, business_key)
+
+    return True
+
+@tool
+def execute_once(id:int, workplace_code, work_group_code):
+    """
+          当执行任务时，把执行任务的次数+1
+
+          输入参数：
+          id：任务唯一id
+          workplace_code：工作点编码
+          work_group_code：工作组编码
+      """
+    business_key = f"{workplace_code}_{work_group_code}"
+    query_data_task_dao.update_execute_times_once(id, business_key)

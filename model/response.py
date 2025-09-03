@@ -1,17 +1,21 @@
+from typing import Any
+
+from pydantic import BaseModel
+
+
 def success(data):
-    return Res(0, data, "success")
+    return Res(code = 0, data = data, msg = "success")
 
 def failure(ex:Exception):
-    return Res(-1, ex.args, "failure")
+    return Res(code = -1, data = ex.args, msg = "failure")
 
 def failure():
-    return Res(-1, "", "failure")
+    return Res(code = -1, data = "", msg = "failure")
 
-class Res:
-    def __init__(self, code, data, msg):
-        self.code = code
-        self.data = data
-        self.msg = msg
+class Res(BaseModel):
+    code:int
+    data:Any
+    msg:str
 
     def to_dict(self):
-        return self.__dict__
+        return self.model_dump(by_alias=True)

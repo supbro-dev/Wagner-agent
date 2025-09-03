@@ -1,12 +1,11 @@
-from pydantic import BaseModel, ConfigDict
+from typing import Any
+
 from pydantic.alias_generators import to_camel
+from pydantic import BaseModel, ConfigDict
 
-from service.interrupt import WorkflowInterrupt
 
-
-class AnswerVo(BaseModel):
-    content:str | None = None
-    interrupt:WorkflowInterrupt | None = None
+class ResultVo(BaseModel):
+    result:Any
 
     def to_json(self):
         return self.model_dump_json(by_alias=True)

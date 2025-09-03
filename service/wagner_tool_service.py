@@ -55,7 +55,7 @@ def get_group_employee(workplace_code, work_group_code):
 
 @tool
 def get_employee_time_on_task(operate_day, employee_number):
-    """根据工作日期、工号查找员工一天的工作情况"""
+    """根据工作日期、工号查找员工一天的工作详情，只能查一个人，如果用户需要查多个人，则不要调用这个工具"""
     res = http_get(f"/efficiency/timeOnTask?operateDay={operate_day}&employeeNumber={employee_number}")
     data = res["data"]
 
