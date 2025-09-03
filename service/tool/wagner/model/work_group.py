@@ -1,7 +1,8 @@
-class WorkGroup:
+from pydantic import BaseModel
 
-    def __init__(self, name, code, position_name, desc):
-        self.name = name
-        self.code = code
-        self.position_name = position_name
-        self.desc = desc
+
+class WorkGroup(BaseModel):
+    name:str
+    code:str
+    position_name:str
+    desc:str

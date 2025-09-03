@@ -5,8 +5,13 @@ from langchain_core.tools import tool
 from service.tool.wagner.model.employee import Employee
 from service.tool.wagner.model.employee_efficiency_summary import EmployeeBasicSummary
 from service.tool.wagner.model.time_on_task import TimeOnTask
+from service.tool.wagner.model.work_group import WorkGroup
+from service.tool.wagner.model.workplace import Workplace
 from util.http_util import http_get
 
+special_delimiter = "+"
+def make_work_group_business_key(workplace_code, work_group_code) -> str:
+    return f"{workplace_code}{special_delimiter}{work_group_code}"
 
 @tool
 def get_employee(employee_name, workplace_code, work_group_code):

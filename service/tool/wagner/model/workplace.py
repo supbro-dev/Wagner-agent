@@ -1,5 +1,7 @@
-class Workplace:
-    def __init__(self, name, code, desc):
-        self.name = name
-        self.code = code
-        self.desc = desc
+from pydantic import BaseModel
+
+
+class Workplace(BaseModel):
+    name:str
+    code:str
+    desc:str

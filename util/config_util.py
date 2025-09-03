@@ -1,7 +1,7 @@
 import configparser
 import os
 
-# 1. 构建配置文件路径（假设文件名为 config.ini，位于项目根目录）
+# 项目根目录下自行放置private_config.ini，用来存放秘钥
 config_path = os.path.join(os.path.dirname(__file__), '../private_config.ini')
 
 # 2. 创建 ConfigParser 对象

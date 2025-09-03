@@ -12,7 +12,7 @@ def create_app(Config=None):
     app.config.from_object(Config)
 
     # 注册蓝图
-    from web.agent_controller import agentApi
+    from web.work_group_agent_controller import agentApi
     app.register_blueprint(agentApi, url_prefix='/agentApi/v1/agent')
 
     return app
