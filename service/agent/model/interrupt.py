@@ -2,7 +2,7 @@
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from service.resume import WorkflowResume
+from service.agent.model.resume import WorkflowResume
 
 
 # 工作流中断对象

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from service.interrupt import WorkflowInterrupt
+from service.agent.model.interrupt import WorkflowInterrupt
 
 
 class AnswerVo(BaseModel):

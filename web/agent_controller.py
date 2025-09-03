@@ -7,9 +7,9 @@ from typing import Any
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 
 from model.response import success, failure
-from model.work_group import WorkGroup
-from model.workplace import Workplace
-from service.workflow_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES, \
+from service.tool.wagner.model.work_group import WorkGroup
+from service.tool.wagner.model.workplace import Workplace
+from service.agent.workflow_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES, \
     convert_2_interrupt
 from util.http_util import http_get
 from web.answer_vo import AnswerVo

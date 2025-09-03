@@ -1,8 +1,10 @@
 from flask import Flask
 from sqlalchemy import create_engine
 
+from config import Config
+
 # 创建引擎（连接数据库）
-engine = create_engine('mysql+pymysql://wagner:wagner@127.0.0.1:3306/wagner?charset=utf8', echo=True)
+engine = create_engine(Config.MYSQL_DATABASE, echo=True)
 
 def create_app(Config=None):
     """应用工厂函数"""

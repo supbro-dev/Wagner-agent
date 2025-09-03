@@ -2,9 +2,9 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from model.employee import Employee
-from model.employee_efficiency_summary import EmployeeBasicSummary
-from model.time_on_task import TimeOnTask
+from service.tool.wagner.model.employee import Employee
+from service.tool.wagner.model.employee_efficiency_summary import EmployeeBasicSummary
+from service.tool.wagner.model.time_on_task import TimeOnTask
 from util.http_util import http_get
 
 

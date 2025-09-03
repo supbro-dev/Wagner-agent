@@ -1,4 +1,4 @@
-from typing import Callable, Any, List, Set
+from typing import List
 import json
 import logging
 import os
@@ -12,7 +12,7 @@ from typing import Sequence
 
 from langchain.output_parsers import OutputFixingParser
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.messages import AnyMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -33,11 +33,11 @@ from typing_extensions import Annotated
 from dao import query_data_task_dao
 from entity.query_data_task_entity import QueryDataTaskEntity
 from model.query_data_task_detail import QueryDataTaskDetail
-from model.work_group import WorkGroup
-from model.workplace import Workplace
-from service.interrupt import WorkflowInterrupt
-from service.resume import WorkflowResume
-from service.wagner_tool_service import get_employee, get_group_employee, get_employee_time_on_task, \
+from service.tool.wagner.model.work_group import WorkGroup
+from service.tool.wagner.model.workplace import Workplace
+from service.agent.model.interrupt import WorkflowInterrupt
+from service.agent.model.resume import WorkflowResume
+from service.tool.wagner.wagner_service import get_employee, get_group_employee, get_employee_time_on_task, \
     get_employee_efficiency
 from util import datetime_util
 from util.config_util import read_private_config
