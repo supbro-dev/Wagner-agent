@@ -8,21 +8,18 @@ from typing_extensions import Annotated
 from model.query_data_task_detail import QueryDataTaskDetail
 
 
-@dataclass
-class InputState:
 
+@dataclass
+class State():
     messages: Annotated[Sequence[AnyMessage], add_messages] = field(
         default_factory=list
     )
-
-@dataclass
-class State(InputState):
     # 用户请求的意图类型
     intent_type: str | None = None
     # 取数任务的目的
     target: str | None = None
     # 取数任务id
-    task_id: str | int = None
+    task_id: int | None = None
     # 取数任务名称
     task_name: str | None = None
     # 第一次创建任务
