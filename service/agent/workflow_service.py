@@ -9,6 +9,9 @@ from typing import List
 from typing import Literal
 from typing import Optional, cast
 
+from IPython.display import Image, display
+from langchain_core.runnables.graph import CurveStyle, MermaidDrawMethod, NodeStyles
+
 from langchain.output_parsers import OutputFixingParser
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
@@ -191,13 +194,15 @@ class WorkflowService:
         # 记忆功能
         memory = InMemorySaver()
         graph = builder.compile(name=graph_name, checkpointer=memory)
-
-        # todo 为什么没有打印出来？
+        # 生成PNG流程图
         try:
-            print(graph.get_graph().draw_ascii())
-        except Exception:
-            # This requires some extra dependencies and is optional
-            pass
+            png_data = graph.get_graph().draw_mermaid_png()
+            # 保存到文件
+            with open("/tmp/langgraph_diagram.png", "wb") as png_file:
+                png_file.write(png_data)
+            logging.info("流程图已保存为 /tmp/workflow_diagram.png")
+        except Exception as e:
+            logging.exception("Failed to generate PNG workflow diagram", e)
 
         return graph
 
@@ -797,7 +802,7 @@ class WorkflowService:
         return state
 
     # EDGES
-    def intent_classifier_to_next(self, state: State):
+    def intent_classifier_to_next(self, state: State) -> Literal[GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
         if state.intent_type == DEFAULT:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
@@ -809,7 +814,8 @@ class WorkflowService:
         else:
             return END
 
-    def check_exist_and_next_node(self, state:State) :
+    def check_exist_and_next_node(self, state: State) -> Literal[
+            GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
         if not state.is_task_existed:
             return GraphNode.FIND_TASK_IN_STORE
         else:
@@ -824,7 +830,7 @@ class WorkflowService:
             else:
                 return END
 
-    def check_exist_in_store_and_next_node(self, state:State):
+    def check_exist_in_store_and_next_node(self, state: State) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
         if not state.is_task_existed:
             if state.intent_type == CREATE:
                 return GraphNode.CREATE_TASK
@@ -850,7 +856,7 @@ class WorkflowService:
 
 
 
-    def need_invoke_tool(self, state:State):
+    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -874,7 +880,7 @@ class WorkflowService:
         else:
             return END
 
-    def after_invoke_tool(self, state:State):
+    def after_invoke_tool(self, state: State) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, END]:
         if state.intent_type == EXECUTE:
             return GraphNode.EXECUTE_TASK
         elif state.intent_type == EDIT or state.intent_type == CREATE:
@@ -882,7 +888,7 @@ class WorkflowService:
         else:
             return END
 
-    def handle_integrated_task(self, state:State):
+    def handle_integrated_task(self, state: State) -> Literal[GraphNode.SAVE_TASK, GraphNode.TEST_RUN_TASK, END]:
         if state.task_detail is not None and state.task_detail.is_integrated():
             request: HumanInterrupt = {
                 "action_request": {
@@ -906,7 +912,7 @@ class WorkflowService:
             return END
 
 
-    def need_invoke_delete_task_tool(self, state: State):
+    def need_invoke_delete_task_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
