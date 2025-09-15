@@ -10,6 +10,8 @@ from typing import Literal
 from typing import Optional, cast
 
 from IPython.display import Image, display
+from langchain_community.vectorstores import Redis
+from langchain_core.documents import Document
 from langchain_core.runnables.graph import CurveStyle, MermaidDrawMethod, NodeStyles
 
 from langchain.output_parsers import OutputFixingParser
@@ -21,6 +23,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool as create_tool
 from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
+from langchain_openai import OpenAIEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
@@ -29,7 +32,9 @@ from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
 from pydantic import BaseModel, Field
+from sqlalchemy.testing.provision import follower_url_from_main
 
+from config import Config
 from dao import query_data_task_dao
 from entity.query_data_task_entity import QueryDataTaskEntity
 from model.query_data_task_detail import QueryDataTaskDetail
@@ -1001,7 +1006,6 @@ class WorkflowService:
                 yield f"data: {json.dumps(data)}\n\n"
 
         return event_stream
-
 
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:

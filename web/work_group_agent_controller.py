@@ -113,7 +113,6 @@ def question_stream():
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
-
 def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowService:
     # 初始化业务键
     business_key = make_work_group_business_key(workplace_code, work_group_code)
