@@ -42,6 +42,7 @@ from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, 
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State
 from util.config_util import read_private_config
+from langgraph.checkpoint.redis import RedisSaver
 
 # 配置基础日志设置（输出到控制台）
 logging.basicConfig(
@@ -200,7 +201,12 @@ class WorkflowService:
         builder.add_edge(GraphNode.DEFAULT_NODE, END)
 
         # 记忆功能
-        memory = InMemorySaver()
+        if Config.MEMORY_USE == "local":
+            memory = InMemorySaver()
+        else:
+            memory = RedisSaver(Config.REDIS_URL)
+            # 第一次执行时初始化redis
+            # memory.setup()
         graph = builder.compile(name=graph_name, checkpointer=memory)
         # 生成PNG流程图
         try:
@@ -497,6 +503,10 @@ class WorkflowService:
         :param state:
         :return: state
         """
+        # 如果没有使用向量存储，则返回
+        if not Config.USE_VECTOR_STORE:
+            return state
+
         # 执行相似度搜索
         results = self.vector_store.similarity_search_with_score(
                 query=f"{state.task_name}",
@@ -746,12 +756,14 @@ class WorkflowService:
         else:
             id = query_data_task_dao.save(entity)
 
-        # 存储到向量空间
-        self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务目标：{state.task_detail.target}"], metadatas=[{
-                    "task_id": id,
-                    "task_name": state.task_name,
-                    "task_detail": entity.task_detail
-                }])
+        # 如果没有使用向量存储，则返回
+        if Config.USE_VECTOR_STORE:
+            # 存储到向量空间
+            self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务目标：{state.task_detail.target}"], metadatas=[{
+                        "task_id": id,
+                        "task_name": state.task_name,
+                        "task_detail": entity.task_detail
+                    }])
 
         return {
             "task_id": id,
@@ -999,11 +1011,11 @@ class WorkflowService:
        """
         query_data_task_dao.delete(id, business_key)
 
-        self.vector_store.delete(filter={"task_id": id, "task_name": task_name})
+        # 如果没有使用向量存储，则返回
+        if Config.USE_VECTOR_STORE:
+            self.vector_store.delete(filter={"task_id": id, "task_name": task_name})
 
         return True
-
-
 
 
     def get_frequently_and_usually_execute_tasks(self) -> set[str]:
