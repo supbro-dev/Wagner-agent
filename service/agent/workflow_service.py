@@ -4,18 +4,17 @@ import os
 import queue
 import threading
 import time
+import redis
 from typing import Callable
 from typing import List
 from typing import Literal
 from typing import Optional, cast
 
-from IPython.display import Image, display
-from langchain_community.vectorstores import Redis
-from langchain_core.documents import Document
-from langchain_core.runnables.graph import CurveStyle, MermaidDrawMethod, NodeStyles
-
+from langchain_redis import RedisConfig, RedisVectorStore
 from langchain.output_parsers import OutputFixingParser
+from langchain_community.vectorstores import Redis
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -23,6 +22,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool as create_tool
 from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import START, END
@@ -31,8 +31,6 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
-from pydantic import BaseModel, Field
-from sqlalchemy.testing.provision import follower_url_from_main
 
 from config import Config
 from dao import query_data_task_dao
@@ -120,6 +118,8 @@ class WorkflowService:
     delete_task_tool_list:list[BaseTool]
     # langGraph实例
     graph:CompiledStateGraph
+    # 向量存储
+    vector_store: RedisVectorStore
 
     def __init__(self, workflow_name, business_key:str, basic_system_template:str, business_tool_list:[]):
         self.business_key = business_key
@@ -146,10 +146,13 @@ class WorkflowService:
         self.business_tool_list = [*business_tool_list, execute_once]
 
         # 删除任务的工具
-        self.delete_task_tool_list = [add_human_in_the_loop(logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
+        self.delete_task_tool_list = [add_human_in_the_loop(self.logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
 
         # 初始化langGraph
         self.graph = self.create_graph(workflow_name)
+
+        # 初始化向量存储链接
+        self.vector_store = self.create_vector_store()
 
     def create_graph(self, graph_name):
         """
@@ -210,6 +213,41 @@ class WorkflowService:
             logging.exception("Failed to generate PNG workflow diagram", e)
 
         return graph
+
+    def create_vector_store(self) -> RedisVectorStore:
+        """
+        创建向量存储
+        :return: vector_store
+        """
+        model_location :Optional[str] = read_private_config("embedding_models", "LOCATION")
+        if model_location is None:
+            model_location = Config.EMBEDDING_LOCAL_MODEL
+
+        try:
+            model_name = model_location
+            model_kwargs = {"device": "cpu"}
+            encode_kwargs = {"normalize_embeddings": True}
+            embeddings = HuggingFaceEmbeddings(
+                model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
+            )
+
+            config = RedisConfig(
+                index_name=self.business_key,
+                redis_url=Config.REDIS_URL,
+                metadata_schema=[
+                    {"name": "task_name", "type": "tag"},
+                    {"name": "task_id", "type": "tag"},
+                    {"name": "task_detail", "type": "text"},
+                ],
+            )
+
+            vectorstore = RedisVectorStore(embeddings, config=config)
+
+            return vectorstore
+        except Exception as e:
+            logging.error("创建向量存储连接失败:", e)
+            return None
+
 
     def stream_question(self, query, session_id):
         """
@@ -459,7 +497,20 @@ class WorkflowService:
         :param state:
         :return: state
         """
-        # todo 实现向量存储查询
+        # 执行相似度搜索
+        results = self.vector_store.similarity_search_with_score(
+                query=f"{state.task_name}",
+                k=1,  # 返回唯一的结果
+                return_metadata=True
+            )
+
+        for doc, i in results:
+            logging.info("向量存储相似度搜索结果：%s, 相似度：%s", doc, i)
+            state.task_id = doc.metadata["task_id"]
+            state.task_name = doc.metadata["task_name"]
+            state.task_detail = QueryDataTaskDetail.model_validate(json.loads(doc.metadata["task_detail"]))
+            break
+
         return state
 
     def execute_task(self, state:State):
@@ -695,6 +746,13 @@ class WorkflowService:
         else:
             id = query_data_task_dao.save(entity)
 
+        # 存储到向量空间
+        self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务目标：{state.task_detail.target}"], metadatas=[{
+                    "task_id": id,
+                    "task_name": state.task_name,
+                    "task_detail": entity.task_detail
+                }])
+
         return {
             "task_id": id,
             "query_data_task": True,
@@ -929,6 +987,22 @@ class WorkflowService:
         else:
             return GraphNode.TOOLS_FOR_DELETE_TASK
 
+    @tool
+    def logical_delete_task(self, id: int, task_name, business_key: str):
+        """
+           删除任务信息，结果返回是否删除成功
+
+           输入参数：
+           id：任务唯一id
+           task_name：任务名称
+           business_key：业务键
+       """
+        query_data_task_dao.delete(id, business_key)
+
+        self.vector_store.delete(filter={"task_id": id, "task_name": task_name})
+
+        return True
+
 
 
 
@@ -1006,6 +1080,7 @@ class WorkflowService:
                 yield f"data: {json.dumps(data)}\n\n"
 
         return event_stream
+
 
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:
@@ -1142,20 +1217,6 @@ def add_human_in_the_loop(
 
     return call_tool_with_interrupt
 
-
-@tool
-def logical_delete_task(id:int, task_name, business_key:str):
-    """
-       删除任务信息，结果返回是否删除成功
-
-       输入参数：
-       id：任务唯一id
-       task_name：任务名称
-       business_key：业务键
-   """
-    query_data_task_dao.delete(id, business_key)
-
-    return True
 
 @tool
 def execute_once(id:int, business_key:str):

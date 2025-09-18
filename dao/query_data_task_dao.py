@@ -73,3 +73,9 @@ def get_usually_execute_top3_tasks(business_key):
     with Session() as session:
         query = select(QueryDataTaskEntity).filter_by(business_key = business_key, is_deleted = 0).order_by(QueryDataTaskEntity.execute_time.desc()).limit(3)
         return session.scalars(query).all()
+
+
+def get_all_tasks(business_key):
+    with Session() as session:
+        query = select(QueryDataTaskEntity).filter_by(business_key = business_key, is_deleted = 0)
+        return session.scalars(query).all()
