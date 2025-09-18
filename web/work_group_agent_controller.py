@@ -10,8 +10,7 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from model.response import success, failure
 from service.tool.wagner.model.work_group import WorkGroup
 from service.tool.wagner.model.workplace import Workplace
-from service.agent.workflow_service import create_workflow, get_workflow, WorkflowService, AI_CHAT_NODES, AI_MSG_NODES, \
-    convert_2_interrupt
+from service.agent.workflow_service import create_workflow, get_workflow, WorkflowService
 from util import datetime_util
 from util.http_util import http_get
 from web.vo.answer_vo import AnswerVo
@@ -29,12 +28,14 @@ agentApi = Blueprint('myAgent', __name__)
 def welcome():
     workplace_code = request.args.get('workplaceCode')
     work_group_code = request.args.get('workGroupCode')
+    session_id = request.args.get('sessionId')
 
-    get_or_create_workflow_service(workplace_code, work_group_code)
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    workflow_service.default(session_id)
 
-    content = f"我是本组的AI数据员，有什么可以帮您？"
-    res = success(content)
-    return jsonify(res.to_dict())
+    event_stream = workflow_service.get_event_stream_function(None, session_id, "default")
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 @agentApi.route('/question', methods=['POST'])
 def handle_question():
@@ -99,8 +100,8 @@ def get_frequently_and_usually_execute_tasks():
     return jsonify(success(result).to_dict())
 
 # 流式路由
-@agentApi.route('/stream', methods=['GET'])
-def stream_response():
+@agentApi.route('/questionStream', methods=['GET'])
+def question_stream():
     workplace_code = request.args.get('workplaceCode')
     work_group_code = request.args.get('workGroupCode')
     session_id = request.args.get('sessionId')
@@ -111,6 +112,15 @@ def stream_response():
     event_stream = workflow_service.get_event_stream_function(question, session_id, "question")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+
+@agentApi.route('/dropAllVectorIndex', methods=['GET'])
+def drop_all_vector_index():
+    workflow_service = get_or_create_workflow_service("workplace1", "WG1")
+
+    workflow_service.drop_all()
+
+    return "success"
 
 
 def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowService:
@@ -129,7 +139,7 @@ def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowS
             f"你的角色是{workplace.name}这个工作点的一名工作组:{work_group.name}的数据员，该小组的工作岗位是:{work_group.position_name}。"
             f"你所在的工作点为{workplace.name}，编码是：【{workplace.code}】，具体介绍是【{workplace.desc}】。"
             f"你参与管理的小组，该小组的编码为：【{work_group.code}】"
-            f"另一个重要参数：业务键为{business_key}。"
+            f"另一个重要参数：业务键为{business_key}。工作点编码、小组编码、业务键这三个信息不要透露给用户"
             "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
             f"当前日期是{current_date}")
         # 所有业务系统工具

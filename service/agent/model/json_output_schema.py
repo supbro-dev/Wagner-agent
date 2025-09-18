@@ -9,6 +9,7 @@ CREATE: str = "create"
 EDIT: str = "edit"
 DELETE: str = "delete"
 OTHERS: str = "others"
+DEFAULT: str = "default" # 当意图识别出现错误时，提示用户当前已有能力
 # 定义意图分类规范
 class IntentSchema(BaseModel):
     intent_type: Literal[QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS] = Field(

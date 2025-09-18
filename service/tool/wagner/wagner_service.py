@@ -9,7 +9,7 @@ from service.tool.wagner.model.work_group import WorkGroup
 from service.tool.wagner.model.workplace import Workplace
 from util.http_util import http_get
 
-special_delimiter = "+"
+special_delimiter = "-"
 def make_work_group_business_key(workplace_code, work_group_code) -> str:
     return f"{workplace_code}{special_delimiter}{work_group_code}"
 

@@ -15,4 +15,7 @@ def create_app(Config=None):
     from web.work_group_agent_controller import agentApi
     app.register_blueprint(agentApi, url_prefix='/agentApi/v1/agent')
 
+    from web.admin_controller import adminApi
+    app.register_blueprint(adminApi, url_prefix='/admin/')
+
     return app

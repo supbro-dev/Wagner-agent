@@ -208,3 +208,6 @@ __marimo__/
 
 #config
 private_config.ini
+
+# embedding models file
+embedding_models
