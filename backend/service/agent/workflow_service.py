@@ -133,7 +133,7 @@ class WorkflowService:
         # 初始化llm
         api_key: Optional[str] = read_private_config("deepseek", "API_KEY")
         self.llm = ChatDeepSeek(
-            model="deepseek-chat",
+            model=Config.LLM_MODEL,
             temperature=0,
             max_tokens=None,
             timeout=None,
@@ -219,7 +219,6 @@ class WorkflowService:
             logging.exception("Failed to generate PNG workflow diagram", e)
 
         return graph
-
     def create_vector_store(self) -> RedisVectorStore:
         """
         创建向量存储

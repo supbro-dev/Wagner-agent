@@ -10,7 +10,7 @@ from model.query_data_task_detail import QueryDataTaskDetail
 
 
 @dataclass
-class State():
+class State:
     messages: Annotated[Sequence[AnyMessage], add_messages] = field(
         default_factory=list
     )

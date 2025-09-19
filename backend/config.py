@@ -6,3 +6,4 @@ class Config:
     EMBEDDING_LOCAL_MODEL = "/embedding_models/bge-small-zh-v1.5/BAAI/bge-small-zh-v1___5"
     USE_VECTOR_STORE = False
     MEMORY_USE = "remote"
+    LLM_MODEL = "deepseek-chat"

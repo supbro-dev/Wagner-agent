@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+backend/venv/
 
 # Spyder project settings
 .spyderproject
@@ -207,7 +208,5 @@ marimo/_lsp/
 __marimo__/
 
 #config
-private_config.ini
+backend/private_config.ini
 
-# embedding models file
-embedding_models
