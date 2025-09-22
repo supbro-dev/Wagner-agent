@@ -40,7 +40,7 @@ from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT
 from service.agent.model.resume import WorkflowResume
-from service.agent.model.state import State
+from service.agent.model.state import State, InputState
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
 
@@ -153,7 +153,8 @@ class WorkflowService:
         self.graph = self.create_graph(workflow_name)
 
         # 初始化向量存储链接
-        self.vector_store = self.create_vector_store()
+        if Config.USE_VECTOR_STORE:
+            self.vector_store = self.create_vector_store()
 
     def create_graph(self, graph_name):
         """
@@ -271,7 +272,7 @@ class WorkflowService:
         )
 
         stream = self.graph.stream(
-            input=State(messages=[("user", query)]),
+            input=InputState(messages=[("user", query)]),
             config=config,
             stream_mode=["messages", "tasks"]
         )
@@ -302,7 +303,6 @@ class WorkflowService:
                 task_name = None,
                 first_time_create = True,
                 task_detail = None,
-                is_task_existed = False,
             ),
             config=config,
             stream_mode=["messages", "tasks"]
@@ -324,7 +324,7 @@ class WorkflowService:
         )
 
         res = await self.graph.ainvoke(
-            input=State(messages=[("user", query)]),
+            input=InputState(messages=[("user", query)]),
             config=config,
         )
 
@@ -443,11 +443,12 @@ class WorkflowService:
         # 如果用户有明确意图且指定了任务名或任务id，才更新意图类型
         if intent_type in [EXECUTE, CREATE, EDIT, DELETE]:
             if "task_name" in result or "task_id" in result:
-                state.intent_type = intent_type
-                if "task_id" in result:
-                    state.task_id = result["task_id"]
-                if "task_name" in result:
-                    state.task_name = result["task_name"]
+                if state.task_name != result["task_name"]:
+                    state.intent_type = intent_type
+                    if "task_id" in result:
+                        state.task_id = result["task_id"]
+                    if "task_name" in result:
+                        state.task_name = result["task_name"]
             else:
                 # 识别出名称为空时，返回LLM的默认对话
                 state.intent_type = DEFAULT
@@ -486,8 +487,6 @@ class WorkflowService:
         query_data_task = find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
 
         if query_data_task is not None:
-            state.is_task_existed = True
-
             detail = QueryDataTaskDetail.model_validate(json.loads(query_data_task.task_detail))
             state.task_name = query_data_task.name
             state.task_id = query_data_task.id
@@ -889,9 +888,12 @@ class WorkflowService:
             return END
 
     def check_exist_and_next_node(self, state: State) -> Literal[
-            GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
-        if not state.is_task_existed:
-            return GraphNode.FIND_TASK_IN_STORE
+            GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.CREATE_TASK, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
+        if state.task_detail is None:
+            if state.intent_type == CREATE:
+                return GraphNode.CREATE_TASK
+            else:
+                return GraphNode.FIND_TASK_IN_STORE
         else:
             if state.intent_type == CREATE:
                 return GraphNode.SAME_NAME_WHEN_CREATE
@@ -905,7 +907,7 @@ class WorkflowService:
                 return END
 
     def check_exist_in_store_and_next_node(self, state: State) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
-        if not state.is_task_existed:
+        if state.task_detail is not None:
             if state.intent_type == CREATE:
                 return GraphNode.CREATE_TASK
             elif state.intent_type == EXECUTE:
