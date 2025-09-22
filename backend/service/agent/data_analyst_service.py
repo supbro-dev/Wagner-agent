@@ -39,7 +39,7 @@ from entity.query_data_task_entity import QueryDataTaskEntity
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
-    TaskSchema, DEFAULT, TableSchema
+    TaskSchema, DEFAULT, TableSchema, TEST_RUN
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
 from util.config_util import read_private_config
@@ -405,7 +405,8 @@ class WorkflowService:
             3. {CREATE} - 创建新任务
             4. {EDIT} - 修改/编辑某个任务
             5. {DELETE} - 删除某个任务
-            6. {OTHERS} - 既不查询数据也和任务操作无关     
+            6. {TEST_RUN} - 试算某个任务
+            7. {OTHERS} - 既不查询数据也和任务操作无关     
             
             按JSON格式输出分类结果，只有当用户明确提及创建、执行或修改任务时才归类为相应意图，无关话题一律归类为OTHERS。
             
@@ -921,7 +922,7 @@ class WorkflowService:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
             return GraphNode.QUERY_DATA_NODE
-        elif state.intent_type in [EXECUTE, EDIT, CREATE, DELETE]:
+        elif state.intent_type in [EXECUTE, EDIT, CREATE, DELETE, TEST_RUN]:
             return GraphNode.FIND_TASK_IN_DB
         elif state.intent_type == QUERY_DATA:
             return GraphNode.QUERY_DATA_NODE
@@ -940,6 +941,8 @@ class WorkflowService:
                 return GraphNode.SAME_NAME_WHEN_CREATE
             elif state.intent_type == EXECUTE:
                 return GraphNode.EXECUTE_TASK
+            elif state.intent_type == TEST_RUN:
+                return GraphNode.TEST_RUN_TASK
             elif state.intent_type == EDIT:
                 return GraphNode.EDIT_TASK
             elif state.intent_type == DELETE:
@@ -982,8 +985,7 @@ class WorkflowService:
 
         if not last_message.tool_calls:
             # 如果任务已经执行完毕，再次循环到试跑/保存的中断
-            if state.intent_type == EDIT or state.intent_type == CREATE:
-                # 试跑任务时会走到这里
+            if state.intent_type == TEST_RUN:
                 return GraphNode.CONVERT_TO_STANDARD_FORMAT
             # elif state.intent_type == EXECUTE:
             #     return AFTER_EXECUTE_TASK
@@ -993,8 +995,7 @@ class WorkflowService:
             return GraphNode.TOOLS_FOR_TASK
         elif state.intent_type == QUERY_DATA or state.intent_type == OTHERS:
             return GraphNode.TOOLS_FOR_QUERY_DATA
-        elif state.intent_type == EDIT or state.intent_type == CREATE:
-            # 试跑任务时会走到这里
+        elif state.intent_type == TEST_RUN:
             return GraphNode.TOOLS_FOR_TASK
         else:
             return END
@@ -1014,7 +1015,7 @@ class WorkflowService:
                     "action": 'handle_integrated_task',
                     "args":{
                         "task_name":state.task_name,
-                        "confirm_option_list":[WorkflowResume(resume_type="testRun", resume_desc="试跑", resume_mode="stream"), WorkflowResume(resume_type="save", resume_desc="保存", resume_mode="invoke")]
+                        "confirm_option_list":[WorkflowResume(resume_type="testRun", resume_desc="试跑", resume_mode="cancel"), WorkflowResume(resume_type="save", resume_desc="保存", resume_mode="invoke")]
                     }
                 },
                 "config": DEFAULT_INTERRUPT_CONFIG,
