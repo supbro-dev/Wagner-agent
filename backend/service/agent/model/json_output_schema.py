@@ -38,3 +38,14 @@ class TaskSchema(BaseModel):
         default=None,
         description="调用工具后的加工逻辑"
     )
+
+# 表格的模板
+class TableSchema(BaseModel):
+    header_list: Optional[list[str]] = Field(
+        default=None,
+        description="表格的表头"
+    )
+    data_list: Optional[list[list[str]]] = Field(
+        default=None,
+        description="表格的数据"
+    )

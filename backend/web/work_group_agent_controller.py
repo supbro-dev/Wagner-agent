@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from model.response import success, failure
 from service.tool.wagner.model.work_group import WorkGroup
 from service.tool.wagner.model.workplace import Workplace
-from service.agent.workflow_service import create_workflow, get_workflow, WorkflowService
+from service.agent.data_analyst_service import create_workflow, get_workflow, WorkflowService
 from util import datetime_util
 from util.http_util import http_get
 from web.vo.answer_vo import AnswerVo
@@ -86,6 +86,19 @@ def resume_interrupt_stream():
     event_stream = workflow_service.get_event_stream_function(resume_type, session_id, "resume")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+@agentApi.route('/getStandardDataByMsgId', methods=['GET'])
+def get_standard_data_by_msg_id():
+    msg_id = request.args.get('msgId')
+    workplace_code = request.args.get('workplaceCode')
+    work_group_code = request.args.get('workGroupCode')
+    session_id = request.args.get('sessionId')
+
+    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data = workflow_service.get_standard_data_by_msg_id(msg_id, session_id)
+
+    result = ResultVo(result=data)
+    return jsonify(success(result).to_dict())
 
 @agentApi.route('/getFrequentlyAndUsuallyExecuteTasks', methods=['GET'])
 def get_frequently_and_usually_execute_tasks():

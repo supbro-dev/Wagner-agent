@@ -11,7 +11,7 @@ from dao import query_data_task_dao
 from model.query_data_task_detail import QueryDataTaskDetail
 from model.response import success
 from service.agent.assistant_service import create_assistant_service, get_assistant_service
-from service.agent.workflow_service import get_workflow
+from service.agent.data_analyst_service import get_workflow
 from service.tool.wagner.wagner_service import make_work_group_business_key
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo

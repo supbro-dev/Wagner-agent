@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Sequence, Dict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
@@ -31,3 +31,8 @@ class State(InputState):
     first_time_create: bool = True
     # 已经查找到的任务明细
     task_detail: QueryDataTaskDetail = None
+    # 如果有确定格式的输出，则保存在ai_id_2_data中
+    ai_id_2_data = {}
+
+    last_standard_data:str = "none"
+

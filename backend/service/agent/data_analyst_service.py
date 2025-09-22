@@ -31,6 +31,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
+from openai import responses
 
 from config import Config
 from dao import query_data_task_dao
@@ -38,7 +39,7 @@ from entity.query_data_task_entity import QueryDataTaskEntity
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
-    TaskSchema, DEFAULT
+    TaskSchema, DEFAULT, TableSchema
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
 from util.config_util import read_private_config
@@ -74,6 +75,7 @@ class GraphNode:
     TEST_RUN_TASK= "test_run_task" # 试跑任务
     AFTER_EXECUTE_TASK = "after_execute_task"
     DEFAULT_NODE = "default_node"
+    CONVERT_TO_STANDARD_FORMAT = "convert_to_standard_format" # 把试跑或执行任务的结果转化成标准格式
 
     # 记录有AI逐步返回token返回的节点
     AI_CHAT_NODES = [EXECUTE_TASK, QUERY_DATA_NODE, HOW_TO_IMPROVE_TASK, DELETE_TASK, TEST_RUN_TASK, DEFAULT_NODE]
@@ -181,6 +183,7 @@ class WorkflowService:
         builder.add_node(GraphNode.SAVE_TASK, self.save_task)
         builder.add_node(GraphNode.BEFORE_TEST_RUN_OR_SAVE, self.before_test_run_or_save)
         builder.add_node(GraphNode.DEFAULT_NODE, self.default_node)
+        builder.add_node(GraphNode.CONVERT_TO_STANDARD_FORMAT, self.convert_to_standard_format)
 
         # 起始节点，判断意图
         builder.add_edge(START, GraphNode.INTENT_CLASSIFIER)
@@ -198,6 +201,7 @@ class WorkflowService:
         builder.add_edge(GraphNode.EDIT_TASK, GraphNode.HOW_TO_IMPROVE_TASK)
         builder.add_conditional_edges(GraphNode.DELETE_TASK, self.need_invoke_delete_task_tool)
         builder.add_conditional_edges(GraphNode.TEST_RUN_TASK, self.need_invoke_tool)
+        builder.add_conditional_edges(GraphNode.CONVERT_TO_STANDARD_FORMAT, self.handle_integrated_task)
         builder.add_edge(GraphNode.SAVE_TASK, END)
         builder.add_edge(GraphNode.DEFAULT_NODE, END)
 
@@ -823,6 +827,43 @@ class WorkflowService:
             }
 
 
+    def convert_to_standard_format(self, state:State):
+        all_messages = state.messages
+        last_ai_message = all_messages[-1]
+
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=f"""
+                        你的职责是把给你的文本中的数据转化成标准JSON格式。
+                        
+                        **重要说明**: 以下示例仅用于展示提取数据转化为标准格式的逻辑，不是实际对话历史。
+                       """),
+            # 明确标识示例区
+            MessagesPlaceholder("examples", optional=True),
+            last_ai_message
+        ])
+
+        examples = [
+            AIMessage(f"""今天员工工作情况如下：
+            员工工号\t员工工作量
+            A1\t1000
+            A2\t2000
+            
+            """),
+            AIMessage('{"header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}')
+        ]
+
+        parser = JsonOutputParser(pydantic_object=TableSchema)
+        parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
+        chain = prompt | self.llm | parser_with_llm
+
+        response = chain.invoke({"examples": examples})
+        # 这里直接覆盖原有字典，因为试算结果不需要长期存储
+        return {
+            "ai_id_2_data":{last_ai_message.id:str(response)},
+            "last_standard_data" :str(response)
+        }
+
+
     def how_to_improve_task(self, state:State):
         """
         在用户更新任务模板的过程中，对比模板是否填写完善
@@ -932,7 +973,7 @@ class WorkflowService:
 
 
 
-    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, END]:
+    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -942,7 +983,8 @@ class WorkflowService:
         if not last_message.tool_calls:
             # 如果任务已经执行完毕，再次循环到试跑/保存的中断
             if state.intent_type == EDIT or state.intent_type == CREATE:
-                return self.handle_integrated_task(state)
+                # 试跑任务时会走到这里
+                return GraphNode.CONVERT_TO_STANDARD_FORMAT
             # elif state.intent_type == EXECUTE:
             #     return AFTER_EXECUTE_TASK
             else:
@@ -952,6 +994,7 @@ class WorkflowService:
         elif state.intent_type == QUERY_DATA or state.intent_type == OTHERS:
             return GraphNode.TOOLS_FOR_QUERY_DATA
         elif state.intent_type == EDIT or state.intent_type == CREATE:
+            # 试跑任务时会走到这里
             return GraphNode.TOOLS_FOR_TASK
         else:
             return END
@@ -1068,7 +1111,7 @@ class WorkflowService:
                             if metadata['langgraph_node'] in GraphNode.AI_CHAT_NODES:
                                 # print("question", stream_mode, detail)
                                 content = chunk.content
-                                data_queue.put({"token": content})
+                                data_queue.put({"msgId":chunk.id, "token": content})
                         elif stream_mode == "tasks":
                             # print("question", stream_mode, detail)
                             if "interrupts" in detail and len(detail["interrupts"]) > 0:
@@ -1094,6 +1137,24 @@ class WorkflowService:
 
         return event_stream
 
+    def get_standard_data_by_msg_id(self, msg_id, session_id):
+        """
+        根据msg_id和session_id获取该消息产生的标准化数据
+
+        Parameters:
+            msg_id: str
+            session_id: str sessionId
+
+        Returns:
+            msg_id对应的标准化数据
+        """
+        # 上下文配置
+        config = RunnableConfig(
+            configurable={"thread_id": session_id},
+        )
+
+        state = self.graph.get_state(config=config)
+        return "none"
 
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:
