@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from model.response import success, failure
 from service.tool.wagner.model.work_group import WorkGroup
 from service.tool.wagner.model.workplace import Workplace
-from service.agent.data_analyst_service import create_workflow, get_workflow, WorkflowService
+from service.agent.data_analyst_service import create_service, get_service, DataAnalystService
 from util import datetime_util
 from util.http_util import http_get
 from web.vo.answer_vo import AnswerVo
@@ -30,10 +30,10 @@ def welcome():
     work_group_code = request.args.get('workGroupCode')
     session_id = request.args.get('sessionId')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
-    workflow_service.default(session_id)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
+    data_analyst_service.default(session_id)
 
-    event_stream = workflow_service.get_event_stream_function(None, session_id, "default")
+    event_stream = data_analyst_service.get_event_stream_function(None, session_id, "default")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
@@ -48,9 +48,9 @@ def handle_question():
     session_id = data.get('sessionId')
     question = data.get('question')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
 
-    content = asyncio.run(workflow_service.question(question, session_id))
+    content = asyncio.run(data_analyst_service.question(question, session_id))
     answer = AnswerVo(content=content)
 
     return jsonify(success(answer).to_dict())
@@ -67,9 +67,9 @@ def resume_interrupt():
     session_id = data.get('sessionId')
     resume_type = data.get('resumeType')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
 
-    content, interrupt = workflow_service.resume(resume_type, session_id)
+    content, interrupt = data_analyst_service.resume(resume_type, session_id)
 
     answer = AnswerVo(content=content, interrupt=interrupt)
     return jsonify(success(answer).to_dict())
@@ -81,33 +81,34 @@ def resume_interrupt_stream():
     session_id = request.args.get('sessionId')
     resume_type = request.args.get('resumeType')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
 
-    event_stream = workflow_service.get_event_stream_function(resume_type, session_id, "resume")
+    event_stream = data_analyst_service.get_event_stream_function(resume_type, session_id, "resume")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
-@agentApi.route('/getStandardDataByMsgId', methods=['GET'])
-def get_standard_data_by_msg_id():
-    msg_id = request.args.get('msgId')
+@agentApi.route('/getStateProperties', methods=['GET'])
+def get_state_properties():
     workplace_code = request.args.get('workplaceCode')
     work_group_code = request.args.get('workGroupCode')
     session_id = request.args.get('sessionId')
+    state_property_names = request.args.get("statePropertyNames")
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
-    data = workflow_service.get_standard_data_by_msg_id(msg_id, session_id)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
+    data = data_analyst_service.get_state_properties(session_id, state_property_names)
 
     result = ResultVo(result=data)
     return jsonify(success(result).to_dict())
+
 
 @agentApi.route('/getFrequentlyAndUsuallyExecuteTasks', methods=['GET'])
 def get_frequently_and_usually_execute_tasks():
     workplace_code = request.args.get('workplaceCode')
     work_group_code = request.args.get('workGroupCode')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
 
-    names = workflow_service.get_frequently_and_usually_execute_tasks()
+    names = data_analyst_service.get_frequently_and_usually_execute_tasks()
 
     result = ResultVo(result=list(names))
     return jsonify(success(result).to_dict())
@@ -120,28 +121,28 @@ def question_stream():
     session_id = request.args.get('sessionId')
     question = request.args.get('question')
 
-    workflow_service = get_or_create_workflow_service(workplace_code, work_group_code)
+    data_analyst_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
 
-    event_stream = workflow_service.get_event_stream_function(question, session_id, "question")
+    event_stream = data_analyst_service.get_event_stream_function(question, session_id, "question")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 
 @agentApi.route('/dropAllVectorIndex', methods=['GET'])
 def drop_all_vector_index():
-    workflow_service = get_or_create_workflow_service("workplace1", "WG1")
+    workflow_service = get_or_create_data_analyst_service("workplace1", "WG1")
 
     workflow_service.drop_all()
 
     return "success"
 
 
-def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowService:
+def get_or_create_data_analyst_service(workplace_code, work_group_code) -> DataAnalystService:
     # 初始化业务键
     business_key = make_work_group_business_key(workplace_code, work_group_code)
 
-    workflow_service = get_workflow(business_key)
-    if workflow_service is None:
+    data_analyst_service = get_service(business_key)
+    if data_analyst_service is None:
         workplace = get_workplace(workplace_code)
         work_group = get_work_group(work_group_code, workplace_code)
 
@@ -156,12 +157,12 @@ def get_or_create_workflow_service(workplace_code, work_group_code) -> WorkflowS
             "你的日常工作就是辅助你的小组长一起管理这个小组，所有员工信息、员工出勤情况、作业数据、作业情况都会由专门的工具获取，不要随便编造数据。"
             f"当前日期是{current_date}")
         # 所有业务系统工具
-        business_tool_list = [get_employee, get_group_employee, get_employee_time_on_task, get_employee_efficiency]
+        business_tool_list = [get_employee, get_group_employee, get_employee_efficiency]
         # 工作流名称
         workflow_name = "work_group_agent"
 
-        workflow_service = create_workflow(workflow_name, business_key, basic_system_template, business_tool_list)
-    return workflow_service
+        data_analyst_service = create_service(workflow_name, business_key, basic_system_template, business_tool_list)
+    return data_analyst_service
 
 
 # 获取工作点

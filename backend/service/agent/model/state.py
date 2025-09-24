@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Sequence, Dict
 
 from langchain_core.messages import AnyMessage
+from langgraph._internal._typing import StateLike
 from langgraph.graph import add_messages
 from typing_extensions import Annotated
 
@@ -30,9 +31,8 @@ class State(InputState):
     # 第一次创建任务
     first_time_create: bool = True
     # 已经查找到的任务明细
-    task_detail: QueryDataTaskDetail = None
-    # 如果有确定格式的输出，则保存在ai_id_2_data中
-    ai_id_2_data = {}
-
-    last_standard_data:str = "none"
+    task_detail: QueryDataTaskDetail | None = None
+    # 如果有确定格式的输出，则保存msgId和标准输出格式
+    last_run_msg_id: str | None = None
+    last_standard_data: str | None = None
 
