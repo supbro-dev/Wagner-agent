@@ -4,6 +4,8 @@ import os
 import queue
 import threading
 import time
+from enum import StrEnum
+
 import redis
 from typing import Callable
 from typing import List
@@ -31,6 +33,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
+from openai import responses
 
 from config import Config
 from dao import query_data_task_dao
@@ -38,9 +41,9 @@ from entity.query_data_task_entity import QueryDataTaskEntity
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
-    TaskSchema, DEFAULT
+    TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
-from service.agent.model.state import State
+from service.agent.model.state import State, InputState
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
 
@@ -51,9 +54,9 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-workflow_map = {}
+service_map = {}
 
-class GraphNode:
+class GraphNode(StrEnum):
     # 节点名称
     INTENT_CLASSIFIER = "intent_classifier" #意图探测节点，判断用户是希望创建/修改/执行取数任务，还是做其他不相关的事情
     FIND_TASK_IN_DB = "find_task_in_db" # 根据id或name从db中查找任务
@@ -71,15 +74,18 @@ class GraphNode:
     HOW_TO_IMPROVE_TASK = "how_to_improve_task" # 检查是否还需要用户进一步完善任务模板内容
     BEFORE_TEST_RUN_OR_SAVE = "before_test_run_or_save" # 中断前的空节点，避免重放流
     SAVE_TASK = "save_task" # 保存任务
-    TEST_RUN_TASK= "test_run_task" # 试跑任务
+    TEST_RUN_TASK = "test_run_task" # 试跑任务
     AFTER_EXECUTE_TASK = "after_execute_task"
     DEFAULT_NODE = "default_node"
+    CONVERT_TO_STANDARD_FORMAT = "convert_to_standard_format" # 把试跑或执行任务的结果转化成标准格式
+    START = "__start__"
+    END = "__end__"
 
-    # 记录有AI逐步返回token返回的节点
-    AI_CHAT_NODES = [EXECUTE_TASK, QUERY_DATA_NODE, HOW_TO_IMPROVE_TASK, DELETE_TASK, TEST_RUN_TASK, DEFAULT_NODE]
-    # 记录人工构造AI MSG
-    AI_MSG_NODES = [SAME_NAME_WHEN_CREATE]
 
+# 记录有AI逐步返回token返回的节点
+AI_CHAT_NODES = [GraphNode.EXECUTE_TASK, GraphNode.QUERY_DATA_NODE, GraphNode.HOW_TO_IMPROVE_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.DEFAULT_NODE]
+# 记录人工构造AI MSG
+AI_MSG_NODES = [GraphNode.SAME_NAME_WHEN_CREATE]
 
 
 # 默认中断配置
@@ -94,7 +100,8 @@ DEFAULT_INTERRUPT_CONFIG = {
 DEFAULT_TASK_TEMPLATE = QueryDataTaskDetail(
         target="无。(请说明该任务的使用意图)",
         query_param="无。(请索命该任务执行时需要使用哪些查询参数，例如查询日期为昨天)",
-        data_operation="无。(请详细描述，查询到结果之后希望进行哪些加工处理)"
+        data_operation="无。(请详细描述，查询到结果之后希望进行哪些加工处理)",
+        data_format="无。(只能选用表格、折线图)"
     )
 
 
@@ -108,7 +115,7 @@ class CustomCallbackHandler(BaseCallbackHandler):
     def on_chain_error(self, error, **kwargs):
         print(f"执行错误: {error}")
 
-class WorkflowService:
+class DataAnalystService:
     # 工作流服务的业务唯一键，同一个business_key下的取数任务名称唯一
     business_key:str
     # 工作流服务默认的系统提示词，包含所有基础业务信息
@@ -122,7 +129,7 @@ class WorkflowService:
     # 向量存储
     vector_store: RedisVectorStore
 
-    def __init__(self, workflow_name, business_key:str, basic_system_template:str, business_tool_list:[]):
+    def __init__(self, service_name, business_key:str, basic_system_template:str, business_tool_list):
         self.business_key = business_key
 
         # 初始化大模型
@@ -144,16 +151,20 @@ class WorkflowService:
         self.basic_system_template = basic_system_template
 
         # 设置业务用所有工具方法
-        self.business_tool_list = [*business_tool_list, execute_once]
+        self.business_tool_list = business_tool_list
+
+        # 设置业务用所有工具方法
+        self.execute_with_business_tool_list = [*business_tool_list, execute_once]
 
         # 删除任务的工具
         self.delete_task_tool_list = [add_human_in_the_loop(self.logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
 
         # 初始化langGraph
-        self.graph = self.create_graph(workflow_name)
+        self.graph = self.create_graph(service_name)
 
         # 初始化向量存储链接
-        self.vector_store = self.create_vector_store()
+        if Config.USE_VECTOR_STORE:
+            self.vector_store = self.create_vector_store()
 
     def create_graph(self, graph_name):
         """
@@ -180,6 +191,7 @@ class WorkflowService:
         builder.add_node(GraphNode.SAVE_TASK, self.save_task)
         builder.add_node(GraphNode.BEFORE_TEST_RUN_OR_SAVE, self.before_test_run_or_save)
         builder.add_node(GraphNode.DEFAULT_NODE, self.default_node)
+        builder.add_node(GraphNode.CONVERT_TO_STANDARD_FORMAT, self.convert_to_standard_format)
 
         # 起始节点，判断意图
         builder.add_edge(START, GraphNode.INTENT_CLASSIFIER)
@@ -192,11 +204,12 @@ class WorkflowService:
         builder.add_conditional_edges(GraphNode.QUERY_DATA_NODE, self.need_invoke_tool)
         builder.add_edge(GraphNode.CREATE_TASK, GraphNode.HOW_TO_IMPROVE_TASK)
         builder.add_edge(GraphNode.HOW_TO_IMPROVE_TASK, GraphNode.BEFORE_TEST_RUN_OR_SAVE)
-        builder.add_conditional_edges(GraphNode.BEFORE_TEST_RUN_OR_SAVE, self.handle_integrated_task)
+        builder.add_edge(GraphNode.BEFORE_TEST_RUN_OR_SAVE, END)
         builder.add_edge(GraphNode.SAME_NAME_WHEN_CREATE, END)
         builder.add_edge(GraphNode.EDIT_TASK, GraphNode.HOW_TO_IMPROVE_TASK)
         builder.add_conditional_edges(GraphNode.DELETE_TASK, self.need_invoke_delete_task_tool)
         builder.add_conditional_edges(GraphNode.TEST_RUN_TASK, self.need_invoke_tool)
+        builder.add_edge(GraphNode.CONVERT_TO_STANDARD_FORMAT, END)
         builder.add_edge(GraphNode.SAVE_TASK, END)
         builder.add_edge(GraphNode.DEFAULT_NODE, END)
 
@@ -271,7 +284,7 @@ class WorkflowService:
         )
 
         stream = self.graph.stream(
-            input=State(messages=[("user", query)]),
+            input=InputState(messages=[("user", query)]),
             config=config,
             stream_mode=["messages", "tasks"]
         )
@@ -294,15 +307,8 @@ class WorkflowService:
         )
 
         stream = self.graph.stream(
-            input=State(
+            input=InputState(
                 messages=[],
-                intent_type=None,
-                target = None,
-                task_id = None,
-                task_name = None,
-                first_time_create = True,
-                task_detail = None,
-                is_task_existed = False,
             ),
             config=config,
             stream_mode=["messages", "tasks"]
@@ -324,7 +330,7 @@ class WorkflowService:
         )
 
         res = await self.graph.ainvoke(
-            input=State(messages=[("user", query)]),
+            input=InputState(messages=[("user", query)]),
             config=config,
         )
 
@@ -385,8 +391,9 @@ class WorkflowService:
         :return: state
         """
 
-        # 如果意图指定是DEFAULT，直接进入DEFAULT节点
-        if state.intent_type == DEFAULT:
+        # 如果没有任何消息，直接返回DEFAULT
+        if len(state.messages) == 0:
+            state.intent_type = DEFAULT
             return state
 
         intent_prompt = ChatPromptTemplate.from_messages([
@@ -401,11 +408,13 @@ class WorkflowService:
             3. {CREATE} - 创建新任务
             4. {EDIT} - 修改/编辑某个任务
             5. {DELETE} - 删除某个任务
-            6. {OTHERS} - 既不查询数据也和任务操作无关     
+            6. {TEST_RUN} - 试算某个任务
+            7. {SAVE} - 保存某个任务
+            8. {OTHERS} - 既不查询数据也和任务操作无关     
             
-            按JSON格式输出分类结果，只有当用户明确提及创建、执行或修改任务时才归类为相应意图，无关话题一律归类为OTHERS。
+            按JSON格式输出分类结果，无关话题一律归类为OTHERS。
             
-            **重要说明**: 以下示例仅用于展示分类逻辑，不是实际对话历史。
+            **重要说明**: 以下示例仅用于展示意图分类逻辑，不是实际对话历史，不要直接解析为意图。
                        """),
             # 明确标识示例区
             MessagesPlaceholder("examples", optional=True),
@@ -415,16 +424,15 @@ class WorkflowService:
 
         examples = [
             # 使用few-shot示例（强调AI必须返回JsonOutputParser的格式，不加AI会尝试返回自然语言的KV）：
-            ("human", "执行本小组上个月的月度人效报告"),
+            ("human", "执行任务：本小组上个月的月度人效报告"),
             ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"月度人效报告\"}"),
-            ("human", "运行本组上周的工时分析报表"),
-            ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"工时分析报表\"}"),
-            ("human", "创建一个工时分析报表，用来分析每天组内员工的工时分布"),
+            ("human", "创建任务：一个工时分析报表，用来分析每天组内员工的工时分布"),
             ("ai",
              "{\"intent_type\": \"" + CREATE + "\", \"task_name\": \"工时分析报表\"}"),
             ("human", "查一下员工工时信息"),
-            ("ai",
-             "{\"intent_type\": \"" + QUERY_DATA + "\"}"),
+            ("ai", "{\"intent_type\": \"" + QUERY_DATA + "\"}"),
+            ("human", "试跑任务：员工工时信息"),
+            ("ai", "{\"intent_type\": \"" + TEST_RUN + "\", \"task_name\": \"员工工时信息\"}"),
         ]
 
         parser = JsonOutputParser(pydantic_object=IntentSchema)
@@ -441,13 +449,34 @@ class WorkflowService:
         logging.info("推断出的intent_type:%s, result:%s", intent_type, result)
 
         # 如果用户有明确意图且指定了任务名或任务id，才更新意图类型
-        if intent_type in [EXECUTE, CREATE, EDIT, DELETE]:
+        if intent_type in [EXECUTE, TEST_RUN, DELETE]:
             if "task_name" in result or "task_id" in result:
                 state.intent_type = intent_type
                 if "task_id" in result:
                     state.task_id = result["task_id"]
                 if "task_name" in result:
                     state.task_name = result["task_name"]
+            else:
+                # 识别出名称为空时，返回LLM的默认对话
+                state.intent_type = DEFAULT
+        elif intent_type in [CREATE, EDIT]:
+            if "task_name" in result or "task_id" in result:
+                if state.task_name != result["task_name"]:
+                    # 清空上下文
+                    state.last_run_msg_id = None
+                    state.last_standard_data = None
+                    state.task_detail = None
+                    state.first_time_create = True
+                    state.target = None
+                    state.task_id = None
+                    state.task_name = None
+
+                    state.intent_type = intent_type
+                    if "task_id" in result:
+                        state.task_id = result["task_id"]
+                    if "task_name" in result:
+                        state.task_name = result["task_name"]
+
             else:
                 # 识别出名称为空时，返回LLM的默认对话
                 state.intent_type = DEFAULT
@@ -486,8 +515,6 @@ class WorkflowService:
         query_data_task = find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
 
         if query_data_task is not None:
-            state.is_task_existed = True
-
             detail = QueryDataTaskDetail.model_validate(json.loads(query_data_task.task_detail))
             state.task_name = query_data_task.name
             state.task_id = query_data_task.id
@@ -544,7 +571,7 @@ class WorkflowService:
                 """),
                 *all_messages  # 包含所有历史消息
             ])
-            chain = prompt | self.llm.bind_tools(self.business_tool_list)
+            chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
             response = chain.invoke({})
             return {
                 "messages": [response],
@@ -568,7 +595,7 @@ class WorkflowService:
                 HumanMessage(content="{user_input}")  # 用户最后一条消息
             ])
 
-            chain = prompt | self.llm.bind_tools(self.business_tool_list)
+            chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
             response = chain.invoke({"user_input": last_human_message})
             return {
                 "messages": [response],
@@ -718,8 +745,8 @@ class WorkflowService:
             ])
 
             examples = [
-                ("human", "任务的目标：每日工作效率统计。数据加工逻辑：单加一列：工作量除以工作时长为工作效率"),
-                ("ai", "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
+                ("human", "任务的目标：每日工作效率统计。查询参数：查询昨天的数据，数据加工逻辑：单加一列：工作量除以工作时长为工作效率，数据格式：表格"),
+                ("ai", "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\", \"data_format\":\"表格\"}"),
             ]
 
             chain = prompt | self.llm| parser
@@ -792,7 +819,7 @@ class WorkflowService:
                 
                 如果你所用到的工具的参数涉及到日期，默认查询当前时间的前一天
                 
-                只用返回按用户要求进行数据加工之后的结果。
+                只用返回按用户要求进行数据加工之后的结果
                 
                 """),
                 *all_messages  # 包含所有历史消息
@@ -823,6 +850,80 @@ class WorkflowService:
             "messages": [response],
             }
 
+
+    def convert_to_standard_format(self, state:State):
+        all_messages = state.messages
+        last_ai_message = all_messages[-1]
+
+        if state.task_detail.data_format == '表格':
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                            你的职责是把给你的文本中的数据转化成标准JSON格式。
+                            
+                            **重要说明**: 以下示例仅用于展示提取数据转化为标准格式的逻辑，不是实际对话历史
+                           """),
+                # 明确标识示例区
+                MessagesPlaceholder("examples", optional=True),
+                last_ai_message
+            ])
+
+            examples = [
+                AIMessage(f"""今天员工工作情况如下：
+                员工工号\t员工工作量
+                A1\t1000
+                A2\t2000
+                
+                """),
+                AIMessage('{"header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}')
+            ]
+
+            parser = JsonOutputParser(pydantic_object=TableSchema)
+        elif state.task_detail.data_format == '折线图':
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                                        你的职责是把给你的文本中的数据转化成标准JSON格式。
+                                        请参考下文描述的折线图数据展示方式：
+                                        {state.task_detail.data_operation}
+                                        
+                                        
+                                        **注意**:由于是折线图，如果纵轴(y轴)数据为空，则默认设置为0。
+                                        **重要说明**: 以下示例仅用于展示提取数据转化为标准格式的逻辑，不是实际对话历史。
+                                       """),
+                # 明确标识示例区
+                MessagesPlaceholder("examples", optional=True),
+                last_ai_message
+            ])
+
+            examples = [
+                SystemMessage(content=f"""
+                                        你的职责是把给你的文本中的数据转化成标准JSON格式。
+                                        请参考下文描述的折线图数据展示方式：
+                                        使用月份作为横轴，效率值作为纵轴                                        
+                                        """),
+                AIMessage(f"""今天员工工作情况如下：
+                            员工工号\t月份\t员工工作量
+                            A1\t1月\t1000
+                            A2\t2月\t2000
+                            A3\t3月\t3000
+                            A4\t4月\t4000
+                            A5\t5月\t5000
+                            """),
+                AIMessage('{"x_axis": ["1月", "2月", "3月", "4月", "5月"],"y_axis":[1000,2000,3000,4000,5000]，"x_name":"月份", "y_name":"效率值"}')
+            ]
+
+            parser = JsonOutputParser(pydantic_object=LineChartSchema)
+        else:
+            return state
+
+        parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
+        chain = prompt | self.llm | parser_with_llm
+
+        response = chain.invoke({"examples": examples})
+
+        return {
+            "last_run_msg_id": last_ai_message.id,
+            "last_standard_data": str(response)
+        }
 
     def how_to_improve_task(self, state:State):
         """
@@ -881,7 +982,7 @@ class WorkflowService:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
             return GraphNode.QUERY_DATA_NODE
-        elif state.intent_type in [EXECUTE, EDIT, CREATE, DELETE]:
+        elif state.intent_type in [EXECUTE, EDIT, CREATE, DELETE, TEST_RUN]:
             return GraphNode.FIND_TASK_IN_DB
         elif state.intent_type == QUERY_DATA:
             return GraphNode.QUERY_DATA_NODE
@@ -889,9 +990,38 @@ class WorkflowService:
             return END
 
     def check_exist_and_next_node(self, state: State) -> Literal[
-            GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
-        if not state.is_task_existed:
-            return GraphNode.FIND_TASK_IN_STORE
+            GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.CREATE_TASK, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
+        if state.task_detail is None:
+            if state.intent_type == CREATE:
+                return GraphNode.CREATE_TASK
+            else:
+                return GraphNode.FIND_TASK_IN_STORE
+        else:
+            if state.intent_type == CREATE:
+                return GraphNode.SAME_NAME_WHEN_CREATE
+            elif state.intent_type == EXECUTE:
+                return GraphNode.EXECUTE_TASK
+            elif state.intent_type == TEST_RUN:
+                return GraphNode.TEST_RUN_TASK
+            elif state.intent_type == EDIT:
+                return GraphNode.EDIT_TASK
+            elif state.intent_type == DELETE:
+                return GraphNode.DELETE_TASK
+            else:
+                return END
+
+    def check_exist_in_store_and_next_node(self, state: State) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
+        if state.task_detail is not None:
+            if state.intent_type == CREATE:
+                return GraphNode.CREATE_TASK
+            elif state.intent_type == EXECUTE:
+                return GraphNode.CREATE_TASK
+            elif state.intent_type == EDIT:
+                return GraphNode.CREATE_TASK
+            elif state.intent_type == DELETE:
+                return GraphNode.CREATE_TASK
+            else:
+                return END
         else:
             if state.intent_type == CREATE:
                 return GraphNode.SAME_NAME_WHEN_CREATE
@@ -904,33 +1034,9 @@ class WorkflowService:
             else:
                 return END
 
-    def check_exist_in_store_and_next_node(self, state: State) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, END]:
-        if not state.is_task_existed:
-            if state.intent_type == CREATE:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == EXECUTE:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == EDIT:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == DELETE:
-                return GraphNode.CREATE_TASK
-            else:
-                return END
-        else:
-            if state.intent_type == CREATE:
-                return GraphNode.SAME_NAME_WHEN_CREATE
-            elif state.intent_type == EXECUTE:
-                return GraphNode.EXECUTE_TASK
-            elif state.intent_type == EDIT:
-                return GraphNode.EDIT_TASK
-            elif state.intent_type == DELETE:
-                return GraphNode.DELETE_TASK
-            else:
-                return END
 
 
-
-    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, END]:
+    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -939,8 +1045,8 @@ class WorkflowService:
 
         if not last_message.tool_calls:
             # 如果任务已经执行完毕，再次循环到试跑/保存的中断
-            if state.intent_type == EDIT or state.intent_type == CREATE:
-                return self.handle_integrated_task(state)
+            if state.intent_type == TEST_RUN:
+                return GraphNode.CONVERT_TO_STANDARD_FORMAT
             # elif state.intent_type == EXECUTE:
             #     return AFTER_EXECUTE_TASK
             else:
@@ -949,44 +1055,21 @@ class WorkflowService:
             return GraphNode.TOOLS_FOR_TASK
         elif state.intent_type == QUERY_DATA or state.intent_type == OTHERS:
             return GraphNode.TOOLS_FOR_QUERY_DATA
-        elif state.intent_type == EDIT or state.intent_type == CREATE:
+        elif state.intent_type == TEST_RUN:
             return GraphNode.TOOLS_FOR_TASK
         else:
             return END
 
-    def after_invoke_tool(self, state: State) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, END]:
+    def after_invoke_tool(self, state: State) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
         if state.intent_type == EXECUTE:
             return GraphNode.EXECUTE_TASK
-        elif state.intent_type == EDIT or state.intent_type == CREATE:
+        elif state.intent_type == TEST_RUN:
             return GraphNode.TEST_RUN_TASK
         else:
             return END
 
-    def handle_integrated_task(self, state: State) -> Literal[GraphNode.SAVE_TASK, GraphNode.TEST_RUN_TASK, END]:
-        if state.task_detail is not None and state.task_detail.is_integrated():
-            request: HumanInterrupt = {
-                "action_request": {
-                    "action": 'handle_integrated_task',
-                    "args":{
-                        "task_name":state.task_name,
-                        "confirm_option_list":[WorkflowResume(resume_type="testRun", resume_desc="试跑", resume_mode="stream"), WorkflowResume(resume_type="save", resume_desc="保存", resume_mode="invoke")]
-                    }
-                },
-                "config": DEFAULT_INTERRUPT_CONFIG,
-                "description": "任务信息已填写完整，请问接下来希望进行哪一步操作?"
-            }
-            response = interrupt(request)[0]
-            if response["resumeType"] == "save":
-                return GraphNode.SAVE_TASK
-            elif response["resumeType"] == "testRun":
-                return GraphNode.TEST_RUN_TASK
-            elif response["resumeType"] == "cancel":
-                return END
-        else:
-            return END
 
-
-    def need_invoke_delete_task_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, END]:
+    def need_invoke_delete_task_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -1063,15 +1146,15 @@ class WorkflowService:
                     for stream_mode, detail in stream:
                         if stream_mode == "messages":
                             chunk, metadata = detail
-                            if metadata['langgraph_node'] in GraphNode.AI_CHAT_NODES:
+                            if metadata['langgraph_node'] in AI_CHAT_NODES:
                                 # print("question", stream_mode, detail)
                                 content = chunk.content
-                                data_queue.put({"token": content})
+                                data_queue.put({"msgId":chunk.id, "token": content})
                         elif stream_mode == "tasks":
                             # print("question", stream_mode, detail)
                             if "interrupts" in detail and len(detail["interrupts"]) > 0:
                                 data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
-                            elif detail["name"] in GraphNode.AI_MSG_NODES:
+                            elif detail["name"] in AI_MSG_NODES:
                                 content = get_tasks_mode_ai_msg_content(detail)
                                 if content is not None:
                                     data_queue.put({"token": content})
@@ -1092,6 +1175,36 @@ class WorkflowService:
 
         return event_stream
 
+    def get_state_properties(self, session_id, state_property_names):
+        """
+        根据session_id获取当前任务是否在新增/编辑中，且任务是否维护完善
+
+        Parameters:
+            session_id: str sessionId
+            state_property_names: state中的属性名，逗号分割
+
+        Returns:
+            是否维护完善
+        """
+        # 上下文配置
+        config = RunnableConfig(
+            configurable={"thread_id": session_id},
+        )
+
+        state = self.graph.get_state(config=config)
+
+        state_data = {}
+        for property in state_property_names.split(","):
+            if property == "is_integrated":
+                task_detail = state.values["task_detail"]
+                if task_detail is not None and task_detail.is_integrated():
+                    state_data[property] = True
+                else:
+                    state_data[property] = False
+            else:
+                if property in state.values:
+                    state_data[property] = state.values[property]
+        return state_data
 
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:
@@ -1110,31 +1223,31 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     return None
 
 
-def create_workflow(workflow_name, business_key, basic_system_template, business_tool_list) -> WorkflowService:
+def create_service(service_name, business_key, basic_system_template, business_tool_list) -> DataAnalystService:
     """
     创建并缓存工作流
     # Todo 记忆使用分布式缓存存储后，工作流缓存可放置到分布式缓存中
-    :param workflow_name: 工作流名称
+    :param service_name: 工作流名称
     :param business_key: 业务键
     :param basic_system_template:基础系统提示词
     :param business_tool_list: 业务工具列表
     :return: 工作流实例
     """
-    workflow_service = WorkflowService(workflow_name, business_key, basic_system_template, business_tool_list)
-    workflow_map[business_key] = workflow_service
-    return workflow_service
+    data_analyst_service = DataAnalystService(service_name, business_key, basic_system_template, business_tool_list)
+    service_map[business_key] = data_analyst_service
+    return data_analyst_service
 
-def get_workflow(business_key) -> WorkflowService|None:
+def get_service(business_key) -> DataAnalystService | None:
     """
     根据业务键从缓存中获取工作流实例
     :param business_key:
     :return:工作流实例
     """
-    if business_key not in workflow_map:
+    if business_key not in service_map:
         return None
     else:
-        workflow_service = workflow_map[business_key]
-        return workflow_service
+        data_analyst_service = service_map[business_key]
+        return data_analyst_service
 
 def convert_2_interrupt(interrupt: Interrupt|dict) -> WorkflowInterrupt:
     """

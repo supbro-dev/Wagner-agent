@@ -5,9 +5,10 @@ from pydantic.alias_generators import to_camel
 
 
 class WorkflowResume(BaseModel):
+
     resume_type:str
     resume_desc:str
-    resume_mode:Literal["invoke", "stream"]
+    resume_mode:Literal["invoke", "stream", "cancel"]
 
     model_config = ConfigDict(
         # 设置别名生成器为驼峰命名

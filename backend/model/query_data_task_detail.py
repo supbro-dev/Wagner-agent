@@ -8,6 +8,7 @@ class QueryDataTaskDetail(BaseModel):
     target: str | None # 任务意图
     query_param: str | None # 查询参数
     data_operation:str | None # 数据二次加工
+    data_format: str | None # 数据格式
 
     class Config:
         alias_generator = to_camel
@@ -17,6 +18,7 @@ class QueryDataTaskDetail(BaseModel):
         return f"""
         任务的目标:{self.target}\n
         查询参数:{self.query_param}\n
+        数据格式:{self.data_format}\n
         获取到结果之后的数据加工逻辑:{self.data_operation}\n        
         """
 
@@ -25,4 +27,4 @@ class QueryDataTaskDetail(BaseModel):
 
     # 判断取数任务描述信息时完整的
     def is_integrated(self)->bool:
-        return self.target is not None and self.data_operation is not None
+        return self.target is not None and self.data_operation is not None and self.data_operation is not None and self.data_format is not None
