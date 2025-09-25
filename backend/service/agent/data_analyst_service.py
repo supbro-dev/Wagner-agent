@@ -72,10 +72,8 @@ class GraphNode(StrEnum):
     TOOLS_FOR_UPDATE_TASK = "tools_for_update_task" # 保存任务用的工具，包括人工审核
     TOOLS_FOR_DELETE_TASK = "tools_for_delete_task" # 删除任务用的工具，包括人工审核
     HOW_TO_IMPROVE_TASK = "how_to_improve_task" # 检查是否还需要用户进一步完善任务模板内容
-    BEFORE_TEST_RUN_OR_SAVE = "before_test_run_or_save" # 中断前的空节点，避免重放流
     SAVE_TASK = "save_task" # 保存任务
     TEST_RUN_TASK = "test_run_task" # 试跑任务
-    AFTER_EXECUTE_TASK = "after_execute_task"
     DEFAULT_NODE = "default_node"
     CONVERT_TO_STANDARD_FORMAT = "convert_to_standard_format" # 把试跑或执行任务的结果转化成标准格式
     START = "__start__"
@@ -85,7 +83,7 @@ class GraphNode(StrEnum):
 # 记录有AI逐步返回token返回的节点
 AI_CHAT_NODES = [GraphNode.EXECUTE_TASK, GraphNode.QUERY_DATA_NODE, GraphNode.HOW_TO_IMPROVE_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.DEFAULT_NODE]
 # 记录人工构造AI MSG
-AI_MSG_NODES = [GraphNode.SAME_NAME_WHEN_CREATE]
+AI_MSG_NODES = [GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.SAVE_TASK]
 
 
 # 默认中断配置
@@ -172,7 +170,7 @@ class DataAnalystService:
         :param graph_name:
         :return: graph
         """
-        builder = StateGraph(State, input_schema=State)
+        builder = StateGraph(State, input_schema=InputState)
         # 新Graph
         builder.add_node(GraphNode.INTENT_CLASSIFIER, self.intent_classifier)
         builder.add_node(GraphNode.QUERY_DATA_NODE, self.query_data)
@@ -189,13 +187,12 @@ class DataAnalystService:
         builder.add_node(GraphNode.TOOLS_FOR_DELETE_TASK, ToolNode(self.delete_task_tool_list))
         builder.add_node(GraphNode.TEST_RUN_TASK, self.test_run_task)
         builder.add_node(GraphNode.SAVE_TASK, self.save_task)
-        builder.add_node(GraphNode.BEFORE_TEST_RUN_OR_SAVE, self.before_test_run_or_save)
         builder.add_node(GraphNode.DEFAULT_NODE, self.default_node)
         builder.add_node(GraphNode.CONVERT_TO_STANDARD_FORMAT, self.convert_to_standard_format)
 
         # 起始节点，判断意图
         builder.add_edge(START, GraphNode.INTENT_CLASSIFIER)
-        builder.add_conditional_edges(GraphNode.INTENT_CLASSIFIER, self.intent_classifier_to_next)
+        builder.add_conditional_edges(GraphNode.INTENT_CLASSIFIER, self.after_intent_classifier)
         builder.add_conditional_edges(GraphNode.FIND_TASK_IN_DB, self.check_exist_and_next_node)
         builder.add_conditional_edges(GraphNode.FIND_TASK_IN_STORE, self.check_exist_in_store_and_next_node)
         builder.add_conditional_edges(GraphNode.TOOLS_FOR_TASK, self.after_invoke_tool)
@@ -203,8 +200,7 @@ class DataAnalystService:
         builder.add_conditional_edges(GraphNode.EXECUTE_TASK, self.need_invoke_tool)
         builder.add_conditional_edges(GraphNode.QUERY_DATA_NODE, self.need_invoke_tool)
         builder.add_edge(GraphNode.CREATE_TASK, GraphNode.HOW_TO_IMPROVE_TASK)
-        builder.add_edge(GraphNode.HOW_TO_IMPROVE_TASK, GraphNode.BEFORE_TEST_RUN_OR_SAVE)
-        builder.add_edge(GraphNode.BEFORE_TEST_RUN_OR_SAVE, END)
+        builder.add_edge(GraphNode.HOW_TO_IMPROVE_TASK, END)
         builder.add_edge(GraphNode.SAME_NAME_WHEN_CREATE, END)
         builder.add_edge(GraphNode.EDIT_TASK, GraphNode.HOW_TO_IMPROVE_TASK)
         builder.add_conditional_edges(GraphNode.DELETE_TASK, self.need_invoke_delete_task_tool)
@@ -449,7 +445,7 @@ class DataAnalystService:
         logging.info("推断出的intent_type:%s, result:%s", intent_type, result)
 
         # 如果用户有明确意图且指定了任务名或任务id，才更新意图类型
-        if intent_type in [EXECUTE, TEST_RUN, DELETE]:
+        if intent_type in [EXECUTE, TEST_RUN, DELETE, SAVE]:
             if "task_name" in result or "task_id" in result:
                 state.intent_type = intent_type
                 if "task_id" in result:
@@ -583,6 +579,8 @@ class DataAnalystService:
             prompt = ChatPromptTemplate.from_messages([
                 SystemMessage(content=f"""
                 {self.basic_system_template}
+                
+                请根据任务详情，执行任务，并返回结果。只需要返回给用户任务详情的介绍，无需返回执行任务的过程。
 
                 任务ID:{state.task_id}
                                 
@@ -968,16 +966,8 @@ class DataAnalystService:
             "messages": [response],
         }
 
-    def before_test_run_or_save(self, state: State):
-        """
-        空节点，避免中断恢复后重新执行前一个节点的流式输出
-        :param state:
-        :return:
-        """
-        return state
-
     # EDGES
-    def intent_classifier_to_next(self, state: State) -> Literal[GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
+    def after_intent_classifier(self, state: State) -> Literal[GraphNode.SAVE_TASK, GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
         if state.intent_type == DEFAULT:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
@@ -986,6 +976,12 @@ class DataAnalystService:
             return GraphNode.FIND_TASK_IN_DB
         elif state.intent_type == QUERY_DATA:
             return GraphNode.QUERY_DATA_NODE
+        elif state.intent_type == SAVE:
+            # 如果要保存任务，必须已经有任务详情
+            if state.task_detail is not None and state.task_detail.is_integrated():
+                return GraphNode.SAVE_TASK
+            else:
+                return GraphNode.DEFAULT_NODE
         else:
             return END
 
@@ -1045,10 +1041,8 @@ class DataAnalystService:
 
         if not last_message.tool_calls:
             # 如果任务已经执行完毕，再次循环到试跑/保存的中断
-            if state.intent_type == TEST_RUN:
+            if state.intent_type in [TEST_RUN, EXECUTE]:
                 return GraphNode.CONVERT_TO_STANDARD_FORMAT
-            # elif state.intent_type == EXECUTE:
-            #     return AFTER_EXECUTE_TASK
             else:
                 return END
         elif state.intent_type == EXECUTE:
@@ -1157,7 +1151,7 @@ class DataAnalystService:
                             elif detail["name"] in AI_MSG_NODES:
                                 content = get_tasks_mode_ai_msg_content(detail)
                                 if content is not None:
-                                    data_queue.put({"token": content})
+                                    data_queue.put({"msgId":detail["id"], "token": content})
                 finally:
                     data_queue.put(None)
 
@@ -1214,12 +1208,12 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     :return:
     """
     if "result" in detail:
-        msgs = detail["result"][0]
-        if msgs[0] == "messages":
-            msg_list = msgs[1]
-            for m in msg_list:
-                if m[0] == "ai":
-                    return m[1]
+        for r in detail["result"]:
+            if r[0] == "messages":
+                msgs = r[1]
+                for m in msgs:
+                    if m[0] == "ai":
+                        return m[1]
     return None
 
 
