@@ -25,6 +25,7 @@ const Conversation = () => {
     const { token } = theme.useToken();
     const [value, setValue] = useState('');
     const [loading, setLoading] = useState(false);
+    const [bubbleLoading, setBubbleLoading] = useState(false)
     const [treeData, setTreeData] = useState([]);
     const [conversationList, setConversationList] = useState([]);
     const [workGroupCode, setWorkGroupCode] = useState('');
@@ -99,20 +100,23 @@ const Conversation = () => {
 
     const welcome = async (workplaceCode, workGroupCode, sessionId) => {
         setLoading(true);
-        const showCurrentNewAiBubble = {current:false}
+        setBubbleLoading(true)
+        setShowNewAiBubble(true)
+
+        const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
 
         doStream(`/agentApi/v1/agent/welcome?workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`,
             (event) => {
                 // 注意：SSE的默认事件类型是'message'，数据在event.data中
                 if (event.data) {
+                    if (!firstGetEvent.current) {
+                        firstGetEvent.current = true
+                        setBubbleLoading(false)
+                    }
                     try {
                         const data = JSON.parse(event.data);
                         if (data.token) {
-                            if (!showCurrentNewAiBubble.current) {
-                                setShowNewAiBubble(true)
-                                showCurrentNewAiBubble.current = true
-                            }
                             if (!lastMsgId.current && data.msgId) {
                                 lastMsgId.current = data.msgId;
                                 setConversationId(data.msgId)
@@ -695,8 +699,6 @@ const Conversation = () => {
     }
 
     const updateAiConversationList = (content, msgId) => {
-        setShowNewAiBubble(false)
-
         const theList = conversationList
         theList.push({
             avatar: aiAvatar,
@@ -709,8 +711,6 @@ const Conversation = () => {
     }
 
     const updateUserConversationList = (content) => {
-        setShowNewAiBubble(false)
-
         const theList = conversationList
         theList.push({
             avatar:userAvatar,
@@ -733,6 +733,8 @@ const Conversation = () => {
 
     const submitQuestionStream = async (question) => {
         setLoading(true);
+        setBubbleLoading(true)
+        setShowNewAiBubble(true)
 
         // 更新AI对话
         if (response) {
@@ -751,19 +753,19 @@ const Conversation = () => {
             setValue('')
         }
 
-        const showCurrentNewAiBubble = {current:false}
+        const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
 
         doStream(`/agentApi/v1/agent/questionStream?question=${encodeURIComponent(question)}&workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`,
             (event) => {
                 if (event.data) {
+                    if (!firstGetEvent.current) {
+                        firstGetEvent.current = true
+                        setBubbleLoading(false)
+                    }
                     try {
                         const data = JSON.parse(event.data);
                         if (data.token) {
-                            if (!showCurrentNewAiBubble.current) {
-                                setShowNewAiBubble(true)
-                                showCurrentNewAiBubble.current = true
-                            }
                             setResponse(prev => prev + data.token); // 增量更新
                         } else if (data.interrupt) {
                             // 仅保存、删除时二次确认用到
@@ -904,7 +906,7 @@ const Conversation = () => {
                     <Splitter.Panel >
                         <Flex vertical gap="middle">
                             {agentContentBubble}
-                            <Bubble content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
+                            <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
                                     avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                                     header={"AI数据员"}
                             />
