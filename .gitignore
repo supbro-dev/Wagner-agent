@@ -210,3 +210,5 @@ __marimo__/
 #config
 backend/private_config.ini
 
+frontend/node_modules/
+frontend/build/
