@@ -7,6 +7,8 @@ import markdownit from 'markdown-it';
 import {Content} from "antd/es/layout/layout";
 import { Line } from '@ant-design/plots';
 import LineChart from "@ant-design/plots/es/components/line";
+// data_analyst.js
+import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
 
 
 const aiAvatar = {
@@ -21,7 +23,7 @@ const userAvatar = {
 const md = markdownit({ html: true, breaks: true });
 
 
-const Conversation = () => {
+const Data_analyst = () => {
     const { token } = theme.useToken();
     const [value, setValue] = useState('');
     const [loading, setLoading] = useState(false);
@@ -309,90 +311,6 @@ const Conversation = () => {
         }
     }
 
-    const fetchGet = (url, successHandler) => {
-        try {
-            fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json', // 设置内容类型为JSON
-                },
-            })
-                .then(response => response.json()) // 将响应解析为JSON
-                .then(data => {
-                    if (data.code != 0) {
-                        error(data.msg)
-                    } else {
-                        if (successHandler) {
-                            successHandler(data)
-                        }
-                    }
-                })
-                .catch((err) => {
-                    error(err)
-                    console.error('Error:', err);
-                });
-
-        } catch (error) {
-            console.error('跟AI助手对话失败:', error);
-        }
-    }
-
-    const fetchPost = (url, data, successHandler) => {
-        try {
-            fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json', // 设置内容类型为JSON
-                },
-                body: JSON.stringify(data),
-            })
-                .then(response => response.json()) // 将响应解析为JSON
-                .then(data => {
-                    if (data.code != 0) {
-                        error(data.msg)
-                    } else {
-                        if (successHandler) {
-                            successHandler()
-                        }
-                    }
-                })
-                .catch((err) => {
-                    error(err)
-                    console.error('Error:', err);
-                });
-
-        } catch (error) {
-            console.error('跟AI助手对话失败:', error);
-        }
-    }
-
-    const doStream = (url, onmessageHandler, finishHandler, errorHandler) => {
-        // 建立SSE连接
-        const eventSource = new EventSource(url);
-
-        eventSource.onmessage = (event) => {
-            // 注意：SSE的默认事件类型是'message'，数据在event.data中
-            if (event.data) {
-                if (onmessageHandler) {
-                    onmessageHandler(event);
-                }
-            }
-        };
-        // 监听自定义的'done'事件
-        eventSource.addEventListener('done', () => {
-            eventSource.close();
-            if (finishHandler) {
-                finishHandler()
-            }
-        });
-
-        eventSource.onerror = () => {
-            eventSource.close();
-            if (errorHandler) {
-                errorHandler()
-            }
-        };
-    }
 
     const confirmThis = (confirmType, confirmContent, question) => {
         if (confirmType === 'invoke') {
@@ -949,4 +867,4 @@ const Conversation = () => {
 
 }
 
-export default Conversation;
+export default Data_analyst;

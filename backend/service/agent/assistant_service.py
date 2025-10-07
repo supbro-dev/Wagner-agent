@@ -1,25 +1,40 @@
 # Initialize memory
+import json
 import logging
 import os
+import queue
+import tempfile
+import threading
+from datetime import datetime
 from typing import Optional, Type, cast, Literal
 
+from langchain.retrievers import MultiQueryRetriever
+from langchain_community.document_loaders import UnstructuredMarkdownLoader
 from langchain_core.callbacks import CallbackManagerForToolRun
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_deepseek import ChatDeepSeek
-from langchain_redis import RedisVectorStore
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_redis import RedisVectorStore, RedisConfig
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.redis import RedisSaver
 from langgraph.constants import START, END
 from langgraph.graph.state import CompiledStateGraph, StateGraph
 from langgraph.prebuilt import ToolNode
 from memori import Memori, create_memory_tool, MemoryTool, ConfigManager
 from memori.core.providers import ProviderConfig
 from pydantic import BaseModel, Field
+from werkzeug.utils import secure_filename
 
 from config import Config
+from dao.agent_def_dao import find_by_business_key_and_type
+from entity.agent_def_entity import AgentDefType
 from service.agent.model.assistant_state import AssistantState
+from service.agent.model.state import InputState
+from util import datetime_util
 from util.config_util import read_private_config
 
 
@@ -28,6 +43,11 @@ service_map = {}
 class AssistantGraphNode:
     CHAT = "chat"
     TOOL_SEARCH_FOR_MEMORI = "tool_search_for_memori"
+    QUERY_FROM_VECTOR_STORE = "query_from_vector_store"
+    QUERY_FROM_MEMORI = "query_from_memori"
+    CHAT_AFTER_VECTOR_AND_MEMORI = "chat_after_vector_and_memori"
+
+AI_CHAT_NODES = [AssistantGraphNode.CHAT_AFTER_VECTOR_AND_MEMORI]
 
 
 class MemorySearchInput(BaseModel):
@@ -99,10 +119,75 @@ class AssistantService:
         # 初始化memory_tool
         memory_tool = create_memory_tool(self.memori)
         memory_tool._search_engine = self.memori.search_engine
+        self.memory_tool = memory_tool
         self.memory_search_tool = MemorySearchTool(memory_tool=memory_tool)
 
         # 初始化langGraph
         self.graph = self.create_graph(workflow_name)
+        if Config.USE_VECTOR_STORE:
+            self.vector_store = self.create_vector_store()
+
+    def get_event_stream_function(self, input: str | None, session_id):
+        """
+        获取流式方法，这个方法直接返回给前端使用
+        :param input:
+        :param session_id:
+        :return: event_stream
+        """
+
+        def event_stream():
+
+            # 为每个请求创建专用队列
+            data_queue = queue.Queue()
+
+            def run_workflow():
+                try:
+                    stream = self.stream_question(input, session_id)
+
+
+                    for stream_mode, detail in stream:
+                        if stream_mode == "messages":
+                            chunk, metadata = detail
+                            if metadata['langgraph_node'] in AI_CHAT_NODES:
+                                # print("question", stream_mode, detail)
+                                content = chunk.content
+                                data_queue.put({"msgId": chunk.id, "token": content})
+                finally:
+                    data_queue.put(None)
+
+            # 启动 LangGraph 线程
+            threading.Thread(target=run_workflow).start()
+
+            # 从队列获取数据并发送
+            while True:
+                data = data_queue.get()
+                if data is None:
+                    yield "event: done\ndata: \n\n"
+                    break
+                # 格式化为 SSE 事件
+                yield f"data: {json.dumps(data)}\n\n"
+
+        return event_stream
+
+    def stream_question(self, query, session_id):
+        """
+        流式触发graph
+        :param query: 用户提问信息
+        :param session_id: 用来做state的隔离
+        :return:stream
+        """
+        # 上下文配置
+        config = RunnableConfig(
+            configurable={"thread_id": session_id},
+        )
+
+        stream = self.graph.stream(
+            input=InputState(messages=[("user", query)]),
+            config=config,
+            stream_mode=["messages"]
+        )
+
+        return stream
 
     def find_last_human_message(self, messages) -> (int, BaseMessage):
         """
@@ -112,6 +197,61 @@ class AssistantService:
             if isinstance(messages[i], HumanMessage):
                 return i, messages[i]
         return -1, None
+
+
+    def query_from_vector_store(self, state:AssistantState):
+        all_messages = state.messages
+        question = all_messages[-1].content
+
+        search_kwargs = {
+            "score_threshold": Config.ASSISTANT_RAG_SCORE_THRESHOLD,
+            "k": Config.ASSISTANT_RAG_TOP_K,
+        }
+
+        retriever_from_llm = MultiQueryRetriever.from_llm(
+            retriever=self.vector_store.as_retriever(search_kwargs = search_kwargs), llm=self.llm
+        )
+
+        docs = retriever_from_llm.invoke(question)
+
+        return {
+            "rag_docs": docs
+        }
+
+
+    def query_from_memori(self, state: AssistantState):
+        all_messages = state.messages
+        query = all_messages[-1].content
+
+        result = self.memory_tool.execute(query=query.strip())
+        memori_content = str(result) if result else "No relevant memories found"
+
+        return {
+            "memori_content": memori_content
+        }
+
+    def chat_after_vector_and_memori(self, state: AssistantState):
+        all_messages = state.messages
+        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
+
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=f"{self.basic_system_template}"),
+            *all_messages,
+        ])
+        chain = prompt | self.llm
+        response = chain.invoke({})
+
+        response_content = response.content
+        if response_content != "":
+            self.memori.record_conversation(
+                user_input=human_msg.content, ai_output=response_content
+            )
+        return {
+            "messages": [response],
+        }
+
+
+
 
     def chat(self, state: AssistantState):
         """
@@ -187,7 +327,7 @@ class AssistantService:
             conscious_ingest=True,
             auto_ingest=True,
             api_key=read_private_config("deepseek", "API_KEY"),
-            namespace=self.business_key,
+            namespace="assistant_" + self.business_key,
             schema_init=False, # 第一次执行设置为True，为了自动创建表结构
             provider_config = llm_provider,
             # verbose=True,
@@ -198,16 +338,23 @@ class AssistantService:
 
     def create_graph(self, graph_name):
         builder = StateGraph(AssistantState, input_schema=AssistantState)
-        builder.add_node(AssistantGraphNode.CHAT, self.chat)
-        builder.add_node(AssistantGraphNode.TOOL_SEARCH_FOR_MEMORI, ToolNode([self.memory_search_tool]))
+        builder.add_node(AssistantGraphNode.QUERY_FROM_VECTOR_STORE, self.query_from_vector_store)
+        builder.add_node(AssistantGraphNode.QUERY_FROM_MEMORI, self.query_from_memori)
+        builder.add_node(AssistantGraphNode.CHAT_AFTER_VECTOR_AND_MEMORI, self.chat_after_vector_and_memori)
 
-        builder.add_edge(START, AssistantGraphNode.CHAT)
-        builder.add_conditional_edges(AssistantGraphNode.CHAT, self.need_search_for_memori)
-        builder.add_edge(AssistantGraphNode.TOOL_SEARCH_FOR_MEMORI, AssistantGraphNode.CHAT)
+        builder.add_edge(START, AssistantGraphNode.QUERY_FROM_VECTOR_STORE)
+        builder.add_edge(AssistantGraphNode.QUERY_FROM_VECTOR_STORE, AssistantGraphNode.QUERY_FROM_MEMORI)
+        builder.add_edge(AssistantGraphNode.QUERY_FROM_MEMORI, AssistantGraphNode.CHAT_AFTER_VECTOR_AND_MEMORI)
+        builder.add_edge(AssistantGraphNode.CHAT_AFTER_VECTOR_AND_MEMORI, END)
 
-        # memory = InMemorySaver()
-
-        graph = builder.compile(name=graph_name)
+        # 记忆功能
+        if Config.MEMORY_USE == "local":
+            memory = InMemorySaver()
+        else:
+            memory = RedisSaver(Config.REDIS_URL)
+            # 第一次执行时初始化redis
+            # memory.setup()
+        graph = builder.compile(name=graph_name, checkpointer=memory)
         # # 生成PNG流程图
         # try:
         #     png_data = graph.get_graph().draw_mermaid_png()
@@ -246,13 +393,115 @@ class AssistantService:
         return content
 
 
-def create_assistant_service(workflow_name, business_key, basic_system_template) -> AssistantService:
-    service = AssistantService(workflow_name, business_key, basic_system_template)
+    def create_vector_store(self) -> RedisVectorStore:
+        """
+        创建向量存储
+        :return: vector_store
+        """
+        model_location :Optional[str] = read_private_config("embedding_models", "LOCATION")
+        if model_location is None:
+            model_location = Config.EMBEDDING_LOCAL_MODEL
+
+        try:
+            model_name = model_location
+            model_kwargs = {"device": "cpu"}
+            encode_kwargs = {"normalize_embeddings": True}
+            embeddings = HuggingFaceEmbeddings(
+                model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
+            )
+
+            config = RedisConfig(
+                index_name="assistant_" + self.business_key,
+                redis_url=Config.REDIS_URL,
+                metadata_schema=[
+                    {"name": "source", "type": "tag"},
+                    {"name": "upload_time", "type": "tag"},
+                ],
+            )
+
+            vectorstore = RedisVectorStore(embeddings, config=config)
+
+            return vectorstore
+        except Exception as e:
+            logging.error("创建向量存储连接失败:", e)
+            return None
+
+    # 先只支持md
+    ALLOWED_EXTENSIONS = {'md', 'markdown', 'txt'}
+
+    def allowed_file(self, filename):
+        return '.' in filename and filename.rsplit('.', 1)[1].lower() in self.ALLOWED_EXTENSIONS
+
+    def upload_file(self, file):
+        # 获取文件内容
+        if file and self.allowed_file(file.filename):
+            # 安全处理文件名
+            filename = secure_filename(file.filename)
+
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.md') as temp_file:
+                file.save(temp_file.name)
+                logging.info(f"文件保存成功, {temp_file.name}")
+
+                # 处理Markdown文件
+                id = self.process_single_file(temp_file.name, filename)
+
+                print(id)
+
+                # 清理临时文件
+                os.unlink(temp_file.name)
+
+    def add_metadata(self, doc, filename, time_str):
+        doc.metadata['source'] = filename
+        doc.metadata['upload_time'] = time_str
+        return doc.metadata
+
+    def process_single_file(self, file_path, filename):
+        """处理单个Markdown文件"""
+        try:
+            # 1. 加载Markdown文件
+            loader = UnstructuredMarkdownLoader(file_path)
+            documents = loader.load()
+
+            # 2. 第一层文本分割
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=Config.MD_DOC_VECTOR_CHUNK_SIZE,
+                chunk_overlap=Config.MD_DOC_VECTOR_CHUNK_OVERLAP,
+                separators=Config.MD_DOC_VECTOR_SEPARATORS
+            )
+            splits = text_splitter.split_documents(documents)
+
+            now_str = datetime_util.format_datatime(datetime.now())
+            ids = self.vector_store.add_texts(texts=[doc.page_content for doc in splits], metadatas=[self.add_metadata(doc, filename, now_str) for doc in splits])
+            logging.info("添加知识库文档到向量存储完成:%s", ids)
+        except Exception as e:
+            logging.error(f"处理Markdown文件失败: {str(e)}")
+            raise e
+
+
+def get_or_create_assistant_service(business_key) -> AssistantService:
+    service = get_assistant_service(business_key)
+    if service is None:
+        service = create_assistant_service(business_key)
+    return service
+
+
+def create_assistant_service(business_key) -> AssistantService:
+    agent_def = find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
+
+    if agent_def is None:
+        raise Exception("未找到对应的agent定义")
+
+    service = AssistantService(agent_def.name, business_key, agent_def.system_prompt)
     service_map[business_key] = service
 
     return service
 
-def get_assistant_service(business_key) -> AssistantService:
-    service = service_map[business_key]
-    return service
+def get_assistant_service(business_key):
+    if business_key in service_map:
+        return service_map[business_key]
+    else:
+        return None
+
+
 

@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ResultVo(BaseModel):
+
+    success:bool
     result:Any
 
     def to_json(self):

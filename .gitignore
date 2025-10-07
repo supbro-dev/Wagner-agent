@@ -212,3 +212,6 @@ backend/private_config.ini
 
 frontend/node_modules/
 frontend/build/
+
+.idea/
+.DS_Store
