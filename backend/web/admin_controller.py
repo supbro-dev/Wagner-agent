@@ -45,29 +45,3 @@ def add_all_task_2_vector():
     result = ResultVo(result="加载完成")
     return jsonify(success(result).to_dict())
 
-@adminApi.route('/createAssistant', methods=['GET'])
-def create_assistant():
-    workflow_name = "assistant"
-    business_key = "assistant"
-    basic_system_template = "你是一个好莱坞电影爱好者"
-
-    assistant_service = create_assistant_service(workflow_name, business_key, basic_system_template)
-
-    result = ResultVo(result="success")
-    return jsonify(success(result).to_dict())
-
-
-@adminApi.route('/askAssistant', methods=['GET'])
-def ask_assistant():
-    question = request.args.get('question')
-    session_id = request.args.get('sessionId')
-    business_key = "assistant"
-
-    assistant_service = get_assistant_service(business_key)
-
-    content = assistant_service.ask(question, session_id)
-    print("question:", question)
-    print("answer:", content)
-    answer = AnswerVo(content=content)
-
-    return jsonify(success(answer).to_dict())
