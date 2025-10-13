@@ -6,11 +6,11 @@ from pydantic import BaseModel
 def success(data):
     return Res(code = 0, data = data, msg = "success")
 
-def failure(ex:Exception):
+def failure_with_ex(ex:Exception):
     return Res(code = -1, data = ex.args, msg = "failure")
 
-def failure():
-    return Res(code = -1, data = "", msg = "failure")
+def failure_with_msg(msg:str):
+    return Res(code = -1, data = msg, msg = "failure")
 
 class Res(BaseModel):
     code:int

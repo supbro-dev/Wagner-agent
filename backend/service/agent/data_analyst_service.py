@@ -7,7 +7,7 @@ import time
 from enum import StrEnum
 
 import redis
-from typing import Callable
+from typing import Callable, Any
 from typing import List
 from typing import Literal
 from typing import Optional, cast
@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, System
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool as create_tool
+from langchain_core.tools import BaseTool, tool as create_tool, ArgsSchema
 from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -35,17 +35,28 @@ from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
 from openai import responses
 
+import container
 from config import Config
 from dao import query_data_task_dao
+from dao.agent_def_dao import AgentDefDAO
+from dao.llm_tool_dao import LLMToolDAO
+from dao.query_data_task_dao import QueryDataTaskDAO
+from entity.agent_def_entity import AgentDefType, AgentDefEntity
+from entity.llm_tool_entity import LLMToolType, LLMToolEntity
 from entity.query_data_task_entity import QueryDataTaskEntity
+from model.llm_http_tool_content import LLMHTTPToolContent
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
+from service.tool.llm_http_tool import create_llm_http_tool
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
+from pydantic import BaseModel, Field, create_model
+
+from util.http_util import http_get, http_post
 
 # 配置基础日志设置（输出到控制台）
 logging.basicConfig(
@@ -127,8 +138,17 @@ class DataAnalystService:
     # 向量存储
     vector_store: RedisVectorStore
 
-    def __init__(self, service_name, business_key:str, basic_system_template:str, business_tool_list):
+    # dao
+    agent_def_dao: AgentDefDAO
+    query_data_task_dao: QueryDataTaskDAO
+    llm_tool_dao: LLMToolDAO
+
+    def __init__(self, service_name, business_key:str):
         self.business_key = business_key
+
+        self.agent_def_dao = container.dao_container.agent_def_dao()
+        self.query_data_task_dao = container.dao_container.query_data_task_dao()
+        self.llm_tool_dao = container.dao_container.llm_tool_dao()
 
         # 初始化大模型
         os.environ["LANGSMITH_TRACING"] = "true"
@@ -146,13 +166,17 @@ class DataAnalystService:
             api_key=api_key
         )
 
-        self.basic_system_template = basic_system_template
+        agent_def = self.get_agent_def(business_key)
+        if agent_def is None:
+            raise ValueError(f"未找到业务键{business_key}对应的Agent")
+
+        self.basic_system_template = agent_def.system_prompt
 
         # 设置业务用所有工具方法
-        self.business_tool_list = business_tool_list
+        self.business_tool_list = self.get_business_tool_list(agent_def)
 
         # 设置业务用所有工具方法
-        self.execute_with_business_tool_list = [*business_tool_list, execute_once]
+        self.execute_with_business_tool_list = [*self.business_tool_list, self.execute_once]
 
         # 删除任务的工具
         self.delete_task_tool_list = [add_human_in_the_loop(self.logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
@@ -508,7 +532,7 @@ class DataAnalystService:
         :param state:
         :return:state
         """
-        query_data_task = find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
+        query_data_task = self.find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
 
         if query_data_task is not None:
             detail = QueryDataTaskDetail.model_validate(json.loads(query_data_task.task_detail))
@@ -776,9 +800,9 @@ class DataAnalystService:
 
         if state.task_id is not None:
             entity.id = state.task_id
-            id = query_data_task_dao.save(entity)
+            id = self.query_data_task_dao.save(entity)
         else:
-            id = query_data_task_dao.save(entity)
+            id = self.query_data_task_dao.save(entity)
 
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
@@ -1085,7 +1109,7 @@ class DataAnalystService:
            task_name：任务名称
            business_key：业务键
        """
-        query_data_task_dao.delete(id, business_key)
+        self.query_data_task_dao.delete(id, business_key)
 
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
@@ -1099,7 +1123,7 @@ class DataAnalystService:
         获取最频繁/最近执行过的任务名称
         :return:任务名称列表
         """
-        usually_execute_tasks = query_data_task_dao.get_usually_execute_top3_tasks(self.business_key)
+        usually_execute_tasks = self.query_data_task_dao.get_usually_execute_top3_tasks(self.business_key)
 
         names = set()
         not_in_ids = []
@@ -1107,7 +1131,7 @@ class DataAnalystService:
             names.add(t.name)
             not_in_ids.append(t.id)
 
-        frequently_execute_tasks = query_data_task_dao.get_frequently_execute_top3_tasks(self.business_key, not_in_ids)
+        frequently_execute_tasks = self.query_data_task_dao.get_frequently_execute_top3_tasks(self.business_key, not_in_ids)
 
         for t in frequently_execute_tasks:
             names.add(t.name)
@@ -1200,6 +1224,52 @@ class DataAnalystService:
                     state_data[property] = state.values[property]
         return state_data
 
+    def find_task_by_id_or_name(self, task_id: int, task_name: str | None, business_key: str) -> QueryDataTaskEntity:
+        """
+        根据按优先级根据task_id,task_name查询db中的任务对象
+        :param task_id:
+        :param task_name:
+        :param business_key:业务键
+        :return: 任务对象
+        """
+        if task_id is not None:
+            entity = self.query_data_task_dao.find_by_id(task_id)
+        elif task_name is not None:
+            entity = self.query_data_task_dao.find_by_name(business_key, task_name)
+        else:
+            entity = None
+
+        return entity
+
+    @tool
+    def execute_once(self, id: int, business_key: str):
+        """
+              当执行任务时，把执行任务的次数+1
+
+              输入参数：
+              id：任务唯一id
+              business_key：业务键
+          """
+        self.query_data_task_dao.update_execute_times_once(id, business_key)
+
+    def get_agent_def(self, business_key) -> AgentDefEntity | None:
+        return self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.DATA_ANALYST)
+
+    def get_business_tool_list(self, agent_def: AgentDefEntity):
+        llm_tool_list: list[LLMToolEntity] = self.llm_tool_dao.get_llm_tools_by_agent_id(agent_def.id)
+
+        tools = []
+        for tool in llm_tool_list:
+            if tool.tool_type == LLMToolType.HTTP_TOOL:
+                t = create_llm_http_tool(tool)
+                tools.append(t)
+
+        return tools
+
+
+
+
+
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:
     """
@@ -1217,17 +1287,14 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     return None
 
 
-def create_service(service_name, business_key, basic_system_template, business_tool_list) -> DataAnalystService:
+def create_service(service_name, business_key) -> DataAnalystService:
     """
-    创建并缓存工作流
-    # Todo 记忆使用分布式缓存存储后，工作流缓存可放置到分布式缓存中
+    创建并缓存service
     :param service_name: 工作流名称
     :param business_key: 业务键
-    :param basic_system_template:基础系统提示词
-    :param business_tool_list: 业务工具列表
-    :return: 工作流实例
+    :return: service
     """
-    data_analyst_service = DataAnalystService(service_name, business_key, basic_system_template, business_tool_list)
+    data_analyst_service = DataAnalystService(service_name, business_key)
     service_map[business_key] = data_analyst_service
     return data_analyst_service
 
@@ -1265,23 +1332,12 @@ def convert_2_interrupt(interrupt: Interrupt|dict) -> WorkflowInterrupt:
 
     return workflow_interrupt
 
+def get_real_url(tool_input: dict[str, Any], url: str) -> str:
+    real_url = url.format(**tool_input)
+    return real_url
 
-def find_task_by_id_or_name(task_id:int, task_name:str|None, business_key:str) -> QueryDataTaskEntity:
-    """
-    根据按优先级根据task_id,task_name查询db中的任务对象
-    :param task_id:
-    :param task_name:
-    :param business_key:业务键
-    :return: 任务对象
-    """
-    if task_id is not None:
-        entity = query_data_task_dao.find_by_id(task_id)
-    elif task_name is not None:
-        entity = query_data_task_dao.find_by_name(business_key, task_name)
-    else:
-        entity = None
 
-    return entity
+
 
 
 def add_human_in_the_loop(
@@ -1334,15 +1390,3 @@ def add_human_in_the_loop(
         return tool_response
 
     return call_tool_with_interrupt
-
-
-@tool
-def execute_once(id:int, business_key:str):
-    """
-          当执行任务时，把执行任务的次数+1
-
-          输入参数：
-          id：任务唯一id
-          business_key：业务键
-      """
-    query_data_task_dao.update_execute_times_once(id, business_key)

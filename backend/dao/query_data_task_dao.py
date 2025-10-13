@@ -1,81 +1,173 @@
-from sqlalchemy import update, select
-from sqlalchemy.orm import sessionmaker
-
+from sqlalchemy import select, update
+from dao.base_dao import BaseDAO
 from entity.query_data_task_entity import QueryDataTaskEntity
-from init import engine
-
-# 创建会话类
-Session = sessionmaker(bind=engine)
 
 
-def find_by_name(business_key, name) -> QueryDataTaskEntity | None:
-    session = Session()
-    try:
-        entity = session.query(QueryDataTaskEntity).filter_by(business_key = business_key, name = name, is_deleted = 0).one_or_none()
-        return entity
-    finally:
-        session.close()
+class QueryDataTaskDAO(BaseDAO):
+    def find_by_name(self, business_key, name) -> QueryDataTaskEntity | None:
+        """
+        根据business_key和name查询QueryDataTask记录
 
+        Args:
+            business_key (str): 业务键
+            name (str): 任务名称
 
-def find_by_id(id) -> QueryDataTaskEntity:
-    session = Session()
-    try:
-        entity = session.query(QueryDataTaskEntity).filter_by(id=id, is_deleted = 0).one_or_none()
-        return entity
-    finally:
-        session.close()
+        Returns:
+            QueryDataTaskEntity: 查询到的QueryDataTaskEntity对象，未找到则返回None
+        """
+        def query(session):
+            query = select(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.business_key == business_key,
+                QueryDataTaskEntity.name == name,
+                QueryDataTaskEntity.is_deleted == 0
+            )
+            result = session.execute(query).scalar_one_or_none()
+            return result
 
+        return self.execute_in_session(query)
 
-def save(task_entity:QueryDataTaskEntity) -> int:
-    session = Session()
-    try:
-        if task_entity.id is None:
-            session.add(task_entity)
-        else:
-            session.query(QueryDataTaskEntity).filter_by(id=task_entity.id).update({
-                "task_detail": task_entity.task_detail
-            })
-        session.commit()
-        return task_entity.id
-    finally:
-        session.close()
+    def find_by_id(self, id) -> QueryDataTaskEntity:
+        """
+        根据id查询QueryDataTask记录
 
+        Args:
+            id (int): 任务ID
 
-def delete(id, business_key):
-    session = Session()
-    try:
-        session.query(QueryDataTaskEntity).filter_by(id=id, business_key = business_key).update({
-            "is_deleted": 1
-        })
-        session.commit()
-    finally:
-        session.close()
+        Returns:
+            QueryDataTaskEntity: 查询到的QueryDataTaskEntity对象，未找到则返回None
+        """
+        def query(session):
+            query = select(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.id == id,
+                QueryDataTaskEntity.is_deleted == 0
+            )
+            result = session.execute(query).scalar_one_or_none()
+            return result
 
-def update_execute_times_once(id, business_key):
-    stmt = (
-        update(QueryDataTaskEntity)
-        .where(QueryDataTaskEntity.id == id)
-        .values(invoke_times=QueryDataTaskEntity.invoke_times + 1)
-    )
+        return self.execute_in_session(query)
 
-    # 执行语句
-    with Session() as session:
-        session.execute(stmt)
-        session.commit()  # 提交事务
+    def save(self, task_entity: QueryDataTaskEntity) -> int:
+        """
+        保存QueryDataTask记录
 
+        Args:
+            task_entity (QueryDataTaskEntity): 任务实体对象
 
-def get_frequently_execute_top3_tasks(business_key, not_in_ids):
-    with Session() as session:
-        return session.query(QueryDataTaskEntity).where(QueryDataTaskEntity.id.not_in(not_in_ids)).filter_by(business_key = business_key, is_deleted = 0).order_by(QueryDataTaskEntity.invoke_times.desc()).limit(3).all()
+        Returns:
+            int: 保存的任务ID
+        """
+        def query(session):
+            if task_entity.id is None:
+                session.add(task_entity)
+            else:
+                query = update(QueryDataTaskEntity).where(
+                    QueryDataTaskEntity.id == task_entity.id
+                ).values(
+                    task_detail=task_entity.task_detail
+                )
+                session.execute(query)
+            session.commit()
+            return task_entity.id
 
+        return self.execute_in_session(query)
 
-def get_usually_execute_top3_tasks(business_key):
-    with Session() as session:
-        query = select(QueryDataTaskEntity).filter_by(business_key = business_key, is_deleted = 0).order_by(QueryDataTaskEntity.execute_time.desc()).limit(3)
-        return session.scalars(query).all()
+    def delete(self, id, business_key):
+        """
+        删除QueryDataTask记录（逻辑删除）
 
+        Args:
+            id (int): 任务ID
+            business_key (str): 业务键
+        """
+        def query(session):
+            query = update(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.id == id,
+                QueryDataTaskEntity.business_key == business_key
+            ).values(
+                is_deleted=1
+            )
+            session.execute(query)
+            session.commit()
 
-def get_all_tasks(business_key):
-    with Session() as session:
-        query = select(QueryDataTaskEntity).filter_by(business_key = business_key, is_deleted = 0)
-        return session.scalars(query).all()
+        self.execute_in_session(query)
+
+    def update_execute_times_once(self, id, business_key):
+        """
+        更新任务执行次数+1
+
+        Args:
+            id (int): 任务ID
+            business_key (str): 业务键
+        """
+        def query(session):
+            stmt = (
+                update(QueryDataTaskEntity)
+                .where(
+                    QueryDataTaskEntity.id == id,
+                    QueryDataTaskEntity.business_key == business_key
+                )
+                .values(invoke_times=QueryDataTaskEntity.invoke_times + 1)
+            )
+            session.execute(stmt)
+            session.commit()
+
+        self.execute_in_session(query)
+
+    def get_frequently_execute_top3_tasks(self, business_key, not_in_ids):
+        """
+        获取执行次数最多的前3个任务
+
+        Args:
+            business_key (str): 业务键
+            not_in_ids (list): 排除的任务ID列表
+
+        Returns:
+            list: QueryDataTaskEntity对象列表
+        """
+        def query(session):
+            query = select(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.id.not_in(not_in_ids),
+                QueryDataTaskEntity.business_key == business_key,
+                QueryDataTaskEntity.is_deleted == 0
+            ).order_by(QueryDataTaskEntity.invoke_times.desc()).limit(3)
+            return session.execute(query).scalars().all()
+
+        return self.execute_in_session(query)
+
+    def get_usually_execute_top3_tasks(self, business_key):
+        """
+        获取最近执行时间最靠前的前3个任务
+
+        Args:
+            business_key (str): 业务键
+
+        Returns:
+            list: QueryDataTaskEntity对象列表
+        """
+        def query(session):
+            query = select(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.business_key == business_key,
+                QueryDataTaskEntity.is_deleted == 0
+            ).order_by(QueryDataTaskEntity.execute_time.desc()).limit(3)
+            return session.execute(query).scalars().all()
+
+        return self.execute_in_session(query)
+
+    def get_all_tasks(self, business_key):
+        """
+        获取所有任务
+
+        Args:
+            business_key (str): 业务键
+
+        Returns:
+            list: QueryDataTaskEntity对象列表
+        """
+        def query(session):
+            query = select(QueryDataTaskEntity).where(
+                QueryDataTaskEntity.business_key == business_key,
+                QueryDataTaskEntity.is_deleted == 0
+            )
+            return session.execute(query).scalars().all()
+
+        return self.execute_in_session(query)

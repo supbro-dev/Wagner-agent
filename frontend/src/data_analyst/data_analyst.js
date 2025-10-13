@@ -107,8 +107,8 @@ const Data_analyst = () => {
 
         const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
-
-        doStream(`/agentApi/v1/agent/welcome?workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`,
+        const businessKey = workplaceCode + '-' + workGroupCode
+        doStream(`/agentApi/v1/dataAnalyst/welcome?businessKey=${businessKey}&sessionId=${sessionId}`,
             (event) => {
                 // 注意：SSE的默认事件类型是'message'，数据在event.data中
                 if (event.data) {

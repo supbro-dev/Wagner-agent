@@ -8,7 +8,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from werkzeug.utils import secure_filename
 
 from model.response import success
-from service.agent.assistant_service import create_assistant_service, get_assistant_service, \
+from service.agent.assistant_with_memory_service import create_assistant_service, get_assistant_service, \
     get_or_create_assistant_service
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
@@ -22,7 +22,7 @@ def welcome():
 
     assistant_service = get_or_create_assistant_service(business_key)
 
-    answer = AnswerVo(content="您好好，我是您的AI助手，请问有什么可以帮您？")
+    answer = AnswerVo(content="您好，我是您的AI助手，请问有什么可以帮您？")
 
     return jsonify(success(answer).to_dict())
 

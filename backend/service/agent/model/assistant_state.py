@@ -11,6 +11,9 @@ from service.agent.model.state import InputState
 @dataclass
 class AssistantState(InputState):
 
+    # 推理内容
+    reasoning_context : str = ""
+
     # rag内容
     rag_dosc: list = field(default_factory=list)
 

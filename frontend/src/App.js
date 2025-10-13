@@ -9,7 +9,7 @@ function App() {
     return (
         <BrowserRouter basename="/web">
             <Routes>
-                <Route path="/conversation" element={<DataAnalyst />} />
+                <Route path="/dataAnalyst" element={<DataAnalyst />} />
                 <Route path="/assistant" element={<Assistant />} />
             </Routes>
         </BrowserRouter>
