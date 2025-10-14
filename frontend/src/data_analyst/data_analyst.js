@@ -408,8 +408,9 @@ const Data_analyst = () => {
 
 
     const getFrequentlyAndUsuallyTasks = (workplaceCode, workGroupCode) => {
+        const businessKey = workplaceCode + '-' + workGroupCode
         try {
-            fetch(`/agentApi/v1/agent/getFrequentlyAndUsuallyExecuteTasks?workplaceCode=${workplaceCode}&workGroupCode=${workGroupCode}`, {
+            fetch(`/agentApi/v1/dataAnalyst/getFrequentlyAndUsuallyExecuteTasks?businessKey=${businessKey}`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json', // 设置内容类型为JSON
@@ -465,8 +466,9 @@ const Data_analyst = () => {
 
 
     const checkConfirm =  async () => {
+        const businessKey = workplaceCode + '-' + workGroupCode
         try {
-            fetch(`/agentApi/v1/agent/getStateProperties?workplaceCode=${workplaceCode}&workGroupCode=${workGroupCode}&sessionId=${sessionId}&statePropertyNames=intent_type,is_integrated,task_name`, {
+            fetch(`/agentApi/v1/dataAnalyst/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,is_integrated,task_name`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json', // 设置内容类型为JSON
@@ -598,7 +600,8 @@ const Data_analyst = () => {
     }
 
     const checkShowStandardData = async (msgId) => {
-        fetchGet(`/agentApi/v1/agent/getStateProperties?workplaceCode=${workplaceCode}&workGroupCode=${workGroupCode}&sessionId=${sessionId}&statePropertyNames=intent_type,last_run_msg_id,last_standard_data,task_detail`,
+        const businessKey = workplaceCode + '-' + workGroupCode
+        fetchGet(`/agentApi/v1/dataAnalyst/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,last_run_msg_id,last_standard_data,task_detail`,
             (data) => {
                 const {
                     intent_type,
@@ -674,7 +677,8 @@ const Data_analyst = () => {
         const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
 
-        doStream(`/agentApi/v1/agent/questionStream?question=${encodeURIComponent(question)}&workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`,
+        const businessKey = workplaceCode + '-' + workGroupCode
+        doStream(`/agentApi/v1/dataAnalyst/questionStream?question=${encodeURIComponent(question)}&businessKey=${businessKey}&sessionId=${sessionId}`,
             (event) => {
                 if (event.data) {
                     if (!firstGetEvent.current) {

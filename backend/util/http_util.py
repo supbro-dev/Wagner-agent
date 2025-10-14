@@ -52,11 +52,11 @@ def http_post(
         timeout: int = 10,
         **kwargs
 ) -> Dict[str, Any]:
-    print("HTTP_GET:", url)
+    print("HTTP_POST:", url)
 
-    response = requests.get(
+    response = requests.post(
         url=url,
-        params=params,
+        json=params,  # 使用 json 参数发送 JSON 数据
         headers={"Content-Type": "application/json"},
         timeout=timeout,
         **kwargs

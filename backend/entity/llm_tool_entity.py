@@ -20,4 +20,5 @@ class LLMToolEntity(Base):
     args_dict = Column(String, nullable=False, comment='参数名及描述(参数名->描述信息)')
     tool_type = Column(String(16), nullable=False, comment='工具类型(http/mcp)')
     content = Column(String, nullable=False, comment='工具内容')
-    response_handler_script = Column(String, nullable=True, comment='工具返回结果处理脚本')
+    request_handle_script = Column(String, nullable=True, comment='工具请求前的处理脚本')
+    response_handle_script = Column(String, nullable=True, comment='工具返回结果处理脚本')

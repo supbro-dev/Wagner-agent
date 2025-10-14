@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool as create_tool
@@ -42,22 +43,32 @@ def create_llm_http_tool(lms_tool_entity: LLMToolEntity):
         if http_method == "GET":
             res = http_get(content.url.format(**tool_input))
         elif http_method == "POST":
-            res = http_post(content.url.format(**tool_input), json=tool_input)
+            params = tool_input
+            if lms_tool_entity.request_handle_script:
+                # 创建一个局部命名空间用于执行脚本
+                local_namespace = {'tool_input': tool_input}
+                try:
+                    # 执行预编译的脚本
+                    exec(lms_tool_entity.request_handle_script, {}, local_namespace)
+                    # 返回处理后的结果
+                    params = local_namespace.get('data', tool_input)
+                except Exception as e:
+                    logging.error(f"执行处理脚本时出错，按tool_input作为post请求参数进行调用: {e}")
+            res = http_post(content.url, params=params)
         else:
             raise ValueError(f"不支持的HTTP方法：{http_method}")
 
         # 如果提供了处理脚本，则执行它
-        if lms_tool_entity.response_handler_script:
+        if lms_tool_entity.response_handle_script:
             # 创建一个局部命名空间用于执行脚本
             local_namespace = {'res': res}
-
             try:
                 # 执行预编译的脚本
-                exec(lms_tool_entity.response_handler_script, {}, local_namespace)
+                exec(lms_tool_entity.response_handle_script, {}, local_namespace)
                 # 返回处理后的结果
                 return local_namespace.get('result', res)
             except Exception as e:
-                logging.error(f"执行处理脚本时出错: {e}")
+                logging.error(f"执行处理脚本时出错，直接返回原始响应: {e}")
                 return res  # 出错时返回原始响应
         else:
             return res

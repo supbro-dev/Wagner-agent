@@ -1,33 +1,22 @@
-import asyncio
 import json
 
 from flask import Blueprint, jsonify, request
-from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_redis import RedisConfig, RedisVectorStore
 
-from config import Config
+import container
 from dao import query_data_task_dao
 from model.query_data_task_detail import QueryDataTaskDetail
 from model.response import success
-from service.agent.assistant_service import create_assistant_service, get_assistant_service
-from service.agent.data_analyst_service import get_service
-from service.tool.wagner.wagner_service import make_work_group_business_key
-from web.vo.answer_vo import AnswerVo
+from web.data_analyst_controller import get_or_create_data_analyst_service
 from web.vo.result_vo import ResultVo
-from web.work_group_agent_controller import get_or_create_data_analyst_service
 
 adminApi = Blueprint('admin', __name__)
 
 @adminApi.route('/addAllTask2Vector', methods=['GET'])
 def add_all_task_2_vector():
-    workplace_code = request.args.get('workplaceCode')
-    work_group_code = request.args.get('workGroupCode')
+    business_key = request.args.get('businessKey')
 
-    workflow_service = get_or_create_data_analyst_service(workplace_code, work_group_code)
-
-    business_key = make_work_group_business_key(workplace_code, work_group_code)
-    task_list = query_data_task_dao.get_all_tasks(business_key)
+    data_analyst_service = get_or_create_data_analyst_service(business_key)
+    task_list = container.dao_container.query_data_task_dao().get_all_tasks(business_key)
 
     texts = []
     metadatas = []
@@ -40,8 +29,8 @@ def add_all_task_2_vector():
                 "task_detail": task.task_detail
             })
 
-    workflow_service.vector_store.add_texts(texts=texts, metadatas=metadatas)
+    data_analyst_service.vector_store.add_texts(texts=texts, metadatas=metadatas)
 
-    result = ResultVo(result="加载完成")
+    result = ResultVo(success=True,result="加载完成")
     return jsonify(success(result).to_dict())
 

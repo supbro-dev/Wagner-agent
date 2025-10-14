@@ -83,6 +83,7 @@ madoka==0.7.1
 Markdown==3.9
 MarkupSafe==3.0.2
 marshmallow==3.26.1
+marshmallow-sqlalchemy==1.4.2
 matplotlib-inline==0.1.7
 mcp==1.17.0
 mem0ai==0.1.118

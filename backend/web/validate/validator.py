@@ -1,3 +1,5 @@
+from functools import wraps
+
 from flask import request
 from flask_marshmallow import Schema
 from marshmallow import ValidationError
@@ -10,6 +12,7 @@ def validate_query_params(**field_definitions):
     :param field_definitions: 字段定义，如 `businessKey=fields.Str(required=True)`
     """
     def decorator(func):
+        @wraps(func)
         def wrapper(*args, **kwargs):
             try:
                 # 动态创建 Schema
