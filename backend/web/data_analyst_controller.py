@@ -18,20 +18,23 @@ from web.vo.result_vo import ResultVo
 
 dataAnalystApi = Blueprint('dataAnalyst', __name__)
 
+@dataAnalystApi.route('/async-test')
+async def async_test():
+    return "Async working!"
+
 
 @dataAnalystApi.route('/welcome', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True)
 )
-def welcome():
+async def welcome():
     business_key = request.validated_data.get('businessKey')
     session_id = request.validated_data.get('sessionId')
 
     data_analyst_service = get_or_create_data_analyst_service(business_key)
-    data_analyst_service.default(session_id)
 
-    event_stream = data_analyst_service.get_event_stream_function(None, session_id, "default")
+    event_stream = data_analyst_service.get_event_stream_function_(None, session_id, "default")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
@@ -128,14 +131,14 @@ def get_frequently_and_usually_execute_tasks():
     sessionId=fields.Str(required=True),
     question=fields.Str(required=True)
 )
-def question_stream():
+async def question_stream():
     business_key = request.validated_data.get('businessKey')
     session_id = request.validated_data.get('sessionId')
     question = request.validated_data.get('question')
 
     data_analyst_service = get_or_create_data_analyst_service(business_key)
 
-    event_stream = data_analyst_service.get_event_stream_function(question, session_id, "question")
+    event_stream = data_analyst_service.get_event_stream_function_(question, session_id, "question")
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 

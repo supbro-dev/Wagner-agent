@@ -18,4 +18,5 @@ def create_app(Config=None):
     from web.assistant_controller import assistantApi
     app.register_blueprint(assistantApi, url_prefix='/agentApi/v1/assistant/')
 
+
     return app

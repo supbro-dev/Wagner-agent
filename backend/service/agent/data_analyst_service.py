@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -52,6 +53,7 @@ from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, 
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
 from service.tool.llm_http_tool import create_llm_http_tool
+from service.tool.mcp_client_tool import create_mcp_client_tools
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
 from pydantic import BaseModel, Field, create_model
@@ -303,7 +305,7 @@ class DataAnalystService:
             callbacks=CallbackManager([handler])
         )
 
-        stream = self.graph.stream(
+        stream = self.graph.astream(
             input=InputState(messages=[("user", query)]),
             config=config,
             stream_mode=["messages", "tasks"]
@@ -326,7 +328,7 @@ class DataAnalystService:
             callbacks=CallbackManager([handler])
         )
 
-        stream = self.graph.stream(
+        stream = self.graph.astream(
             input=InputState(
                 messages=[],
             ),
@@ -569,7 +571,7 @@ class DataAnalystService:
 
         return state
 
-    def execute_task(self, state:State):
+    async def execute_task(self, state:State):
         """
         调用工具执行任务
         :param state:
@@ -592,7 +594,7 @@ class DataAnalystService:
                 *all_messages  # 包含所有历史消息
             ])
             chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
             return {
                 "messages": [response],
             }
@@ -618,12 +620,12 @@ class DataAnalystService:
             ])
 
             chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
-            response = chain.invoke({"user_input": last_human_message})
+            response = await chain.ainvoke({"user_input": last_human_message})
             return {
                 "messages": [response],
             }
 
-    def query_data(self, state: State):
+    async def query_data(self, state: State):
         """
         使用llm+业务工具进行对话和数据查询
         :param state:
@@ -636,7 +638,7 @@ class DataAnalystService:
             *all_messages  # 包含所有历史消息
         ])
         chain = prompt | self.llm.bind_tools(self.business_tool_list)
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
@@ -821,7 +823,7 @@ class DataAnalystService:
         }
 
 
-    def test_run_task(self, state:State):
+    async def test_run_task(self, state:State):
         """
         任务试跑
         :param state:
@@ -848,7 +850,7 @@ class DataAnalystService:
             ])
 
             chain = prompt | self.llm.bind_tools(self.business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
         else:
             # 与工具返回后的调用区别在于，这里不传所有历史信息
             prompt = ChatPromptTemplate.from_messages([
@@ -866,7 +868,7 @@ class DataAnalystService:
                            """),
             ])
             chain = prompt | self.llm.bind_tools(self.business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
 
         return {
             "messages": [response],
@@ -1138,7 +1140,7 @@ class DataAnalystService:
 
         return names
 
-    def get_event_stream_function(self, input:str | None, session_id, stream_type:Literal["question", "resume"]):
+    def get_event_stream_function_(self, input: str | None, session_id, stream_type: Literal["question", "resume"]):
         """
         获取流式方法，这个方法直接返回给前端使用
         :param input:
@@ -1146,52 +1148,96 @@ class DataAnalystService:
         :param stream_type; 是提问还是中断的回复
         :return: event_stream
         """
-        def event_stream():
 
-            # 为每个请求创建专用队列
-            data_queue = queue.Queue()
+        async def async_event_stream():
+            try:
+                # 根据不同的流类型获取对应的流
+                if stream_type == "question":
+                    stream = self.stream_question(input, session_id)
+                elif stream_type == "resume":
+                    stream = self.stream_resume(input, session_id)
+                else:
+                    stream = self.default(session_id)
 
-            def run_workflow():
-                try:
-                    if stream_type == "question":
-                        stream = self.stream_question(input, session_id)
-                    elif stream_type == "resume":
-                        stream = self.stream_resume(input, session_id)
-                    else:
-                        stream = self.default(session_id)
+                # 直接异步迭代处理流数据
+                async for stream_mode, detail in stream:
+                    if stream_mode == "messages":
+                        chunk, metadata = detail
+                        if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            content = chunk.content
+                            yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
+                    elif stream_mode == "tasks":
+                        if "interrupts" in detail and len(detail["interrupts"]) > 0:
+                            yield f"data: {json.dumps({'interrupt': convert_2_interrupt(detail['interrupts'][0]).to_json()})}\n\n"
+                        elif detail["name"] in AI_MSG_NODES:
+                            content = get_tasks_mode_ai_msg_content(detail)
+                            if content is not None:
+                                yield f"data: {json.dumps({'msgId': detail['id'], 'token': content})}\n\n"
+
+                yield "event: done\ndata: \n\n"
+
+            except Exception as e:
+                logging.error(f"Stream processing error: {e}")
+                yield f"event: error\ndata: {str(e)}\n\n"
+                yield "event: done\ndata: \n\n"
+
+        return async_event_stream
 
 
-                    for stream_mode, detail in stream:
-                        if stream_mode == "messages":
-                            chunk, metadata = detail
-                            if metadata['langgraph_node'] in AI_CHAT_NODES:
-                                # print("question", stream_mode, detail)
-                                content = chunk.content
-                                data_queue.put({"msgId":chunk.id, "token": content})
-                        elif stream_mode == "tasks":
-                            # print("question", stream_mode, detail)
-                            if "interrupts" in detail and len(detail["interrupts"]) > 0:
-                                data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
-                            elif detail["name"] in AI_MSG_NODES:
-                                content = get_tasks_mode_ai_msg_content(detail)
-                                if content is not None:
-                                    data_queue.put({"msgId":detail["id"], "token": content})
-                finally:
-                    data_queue.put(None)
-
-            # 启动 LangGraph 线程
-            threading.Thread(target=run_workflow).start()
-
-            # 从队列获取数据并发送
-            while True:
-                data = data_queue.get()
-                if data is None:
-                    yield "event: done\ndata: \n\n"
-                    break
-                # 格式化为 SSE 事件
-                yield f"data: {json.dumps(data)}\n\n"
-
-        return event_stream
+    # def get_event_stream_function(self, input:str | None, session_id, stream_type:Literal["question", "resume"]):
+    #     """
+    #     获取流式方法，这个方法直接返回给前端使用
+    #     :param input:
+    #     :param session_id:
+    #     :param stream_type; 是提问还是中断的回复
+    #     :return: event_stream
+    #     """
+    #     def event_stream():
+    #
+    #         # 为每个请求创建专用队列
+    #         data_queue = queue.Queue()
+    #
+    #         def run_workflow():
+    #             try:
+    #                 if stream_type == "question":
+    #                     stream = self.stream_question(input, session_id)
+    #                 elif stream_type == "resume":
+    #                     stream = self.stream_resume(input, session_id)
+    #                 else:
+    #                     stream = self.default(session_id)
+    #
+    #
+    #                 async for stream_mode, detail in stream:
+    #                     if stream_mode == "messages":
+    #                         chunk, metadata = detail
+    #                         if metadata['langgraph_node'] in AI_CHAT_NODES:
+    #                             # print("question", stream_mode, detail)
+    #                             content = chunk.content
+    #                             data_queue.put({"msgId":chunk.id, "token": content})
+    #                     elif stream_mode == "tasks":
+    #                         # print("question", stream_mode, detail)
+    #                         if "interrupts" in detail and len(detail["interrupts"]) > 0:
+    #                             data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
+    #                         elif detail["name"] in AI_MSG_NODES:
+    #                             content = get_tasks_mode_ai_msg_content(detail)
+    #                             if content is not None:
+    #                                 data_queue.put({"msgId":detail["id"], "token": content})
+    #             finally:
+    #                 data_queue.put(None)
+    #
+    #         # 启动 LangGraph 线程
+    #         threading.Thread(target=run_workflow).start()
+    #
+    #         # 从队列获取数据并发送
+    #         while True:
+    #             data = data_queue.get()
+    #             if data is None:
+    #                 yield "event: done\ndata: \n\n"
+    #                 break
+    #             # 格式化为 SSE 事件
+    #             yield f"data: {json.dumps(data)}\n\n"
+    #
+    #     return event_stream
 
     def get_state_properties(self, session_id, state_property_names):
         """
@@ -1259,10 +1305,20 @@ class DataAnalystService:
         llm_tool_list: list[LLMToolEntity] = self.llm_tool_dao.get_llm_tools_by_agent_id(agent_def.id)
 
         tools = []
+        # 处理http tool
         for tool in llm_tool_list:
             if tool.tool_type == LLMToolType.HTTP_TOOL:
                 t = create_llm_http_tool(tool)
                 tools.append(t)
+
+        # 处理mcp tool
+        mcp_tool_list = []
+        for tool in llm_tool_list:
+            if tool.tool_type == LLMToolType.MCP:
+                mcp_tool_list.append(tool)
+
+        mcp_tool_list = asyncio.run(create_mcp_client_tools(mcp_tool_list))
+        tools = tools + mcp_tool_list
 
         return tools
 
