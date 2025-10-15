@@ -1188,7 +1188,6 @@ class DataAnalystService:
                 yield "event: done\ndata: \n\n"
 
             except Exception as e:
-                print("EXxXXXXXXXXXXXXXXX")
                 logging.error(f"Stream processing error: {e}")
                 yield f"event: error\ndata: {str(e)}\n\n"
                 yield "event: done\ndata: \n\n"

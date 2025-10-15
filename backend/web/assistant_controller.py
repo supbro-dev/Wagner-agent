@@ -17,7 +17,7 @@ assistantApi = Blueprint('assistant', __name__)
 
 
 @assistantApi.route('/welcome', methods=['GET'])
-def welcome():
+async def welcome():
     business_key = request.args.get('businessKey')
 
     assistant_service = get_or_create_assistant_service(business_key)
@@ -29,7 +29,7 @@ def welcome():
 
 
 @assistantApi.route('/askAssistant', methods=['GET'])
-def ask_assistant():
+async def ask_assistant():
     question = request.args.get('question')
     session_id = request.args.get('sessionId')
     business_key = request.args.get('businessKey')
@@ -38,7 +38,7 @@ def ask_assistant():
 
     event_stream = assistant_service.get_event_stream_function(question, session_id)
 
-    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+    return Response(event_stream(), mimetype='text/event-stream')
 
 
 @assistantApi.route('/uploadFile', methods=['POST'])

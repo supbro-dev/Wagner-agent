@@ -6,6 +6,7 @@ import queue
 import tempfile
 import threading
 from datetime import datetime
+from enum import StrEnum
 from typing import Optional, Type, cast, Literal
 
 from dotenv import load_dotenv
@@ -29,10 +30,12 @@ from mem0 import MemoryClient, Memory
 from memori import Memori, create_memory_tool, MemoryTool, ConfigManager
 from memori.core.providers import ProviderConfig
 from pydantic import BaseModel, Field
+from quart import stream_with_context
 from werkzeug.utils import secure_filename
 
 from config import Config
 from container import dao_container
+from dao.agent_def_dao import AgentDefDAO
 from entity.agent_def_entity import AgentDefType
 from service.agent.data_analyst_service import get_service
 from service.agent.model.assistant_state import AssistantState
@@ -59,12 +62,19 @@ class AssistantService:
     # 记忆(mem0)
     memory: Memory
 
-    agent_def_dao = dao_container.agent_def_dao()
+    agent_def_dao:AgentDefDAO
 
 
-    def __init__(self, workflow_name, business_key: str, basic_system_template:str):
+    def __init__(self, business_key):
         self.business_key = business_key
-        self.basic_system_template = basic_system_template
+
+        self.agent_def_dao = dao_container.agent_def_dao()
+        agent_def = self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
+
+        if agent_def is None:
+            raise Exception("未找到对应的agent定义")
+
+        self.basic_system_template = agent_def.system_prompt
 
         # 初始化大模型
         os.environ["LANGSMITH_TRACING"] = "true"
@@ -94,11 +104,12 @@ class AssistantService:
         # 初始化记忆(mem0)
         self.memory = self.create_memory()
         # 初始化langGraph
-        self.graph = self.create_graph(workflow_name)
+        self.graph = self.create_graph(agent_def.name)
         # 创建rag专用向量存储
         self.vector_store = self.create_vector_store()
         # 创建数据员子图调用工具
         self.data_analyst_tool = [ask_data_analyst]
+
 
 
     def get_event_stream_function(self, input: str | None, session_id):
@@ -109,41 +120,30 @@ class AssistantService:
         :return: event_stream
         """
 
-        def event_stream():
+        @stream_with_context
+        async def async_event_stream():
+            try:
 
-            # 为每个请求创建专用队列
-            data_queue = queue.Queue()
+                stream = self.stream_question(input, session_id)
 
-            def run_workflow():
-                try:
-                    stream = self.stream_question(input, session_id)
+                # 直接异步迭代处理流数据
+                async for stream_mode, detail in stream:
 
+                    if stream_mode == "messages":
+                        chunk, metadata = detail
+                        if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            content = chunk.content
+                            yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
+                yield "event: done\ndata: \n\n"
 
-                    for stream_mode, detail in stream:
-                        if stream_mode == "messages":
-                            chunk, metadata = detail
-                            if metadata['langgraph_node'] in AI_CHAT_NODES:
-                                # print("question", stream_mode, detail)
-                                content = chunk.content
-                                data_queue.put({"msgId": chunk.id, "token": content})
-                finally:
-                    data_queue.put(None)
+            except Exception as e:
+                logging.error(f"Stream processing error: {e}")
+                yield f"event: error\ndata: {str(e)}\n\n"
+                yield "event: done\ndata: \n\n"
 
-            # 启动 LangGraph 线程
-            threading.Thread(target=run_workflow).start()
+        return async_event_stream
 
-            # 从队列获取数据并发送
-            while True:
-                data = data_queue.get()
-                if data is None:
-                    yield "event: done\ndata: \n\n"
-                    break
-                # 格式化为 SSE 事件
-                yield f"data: {json.dumps(data)}\n\n"
-
-        return event_stream
-
-    def stream_question(self, query, session_id):
+    async def stream_question(self, query, session_id):
         """
         流式触发graph
         :param query: 用户提问信息
@@ -155,13 +155,55 @@ class AssistantService:
             configurable={"thread_id": session_id},
         )
 
-        stream = self.graph.stream(
+        stream = self.graph.astream(
             input=InputState(messages=[("user", query)]),
             config=config,
             stream_mode=["messages"]
         )
 
         return stream
+
+    def get_all_tasks(self, state: AssistantState):
+        """
+        获取所有的任务
+        :return:state
+        """
+        tasks = self.agent_def_dao.get_all_tasks(self.business_key)
+
+        return {
+            "tasks": tasks,
+        }
+
+    def get_doc_content_from_vector(self, state:AssistantState):
+        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
+
+        search_kwargs = {
+            "score_threshold": Config.ASSISTANT_RAG_SCORE_THRESHOLD,
+            "k": Config.ASSISTANT_RAG_TOP_K,
+        }
+
+        retriever_from_llm = MultiQueryRetriever.from_llm(
+            retriever=self.vector_store.as_retriever(search_kwargs=search_kwargs), llm=self.llm
+        )
+        docs = retriever_from_llm.invoke(human_msg.content)
+
+        return {
+            "rag_docs": docs,
+        }
+
+    def get_memories(self, state: AssistantState):
+        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
+
+        memories = self.memory.search(human_msg.content, user_id=self.business_key)
+        memory_list = memories['results']
+
+        memory_content = ""
+        for memory in memory_list:
+            memory_content += f"- {memory['memory']}\n"
+
+        return {
+            "memory_content": memory_content,
+        }
 
 
     def reason(self, state: AssistantState):
@@ -170,35 +212,26 @@ class AssistantService:
         :param state:
         :return:state
         """
-        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
-
         # 1.basic提示词
         basic_system_prompt = self.basic_system_template
 
         # 2.推理专用提示词
-        reason_prompt_context = prompts.ASSISTANT_REASON_PROMPT
+        reason_prompt_context = prompts.get_assistant_system_prompt()
 
         # 3.知识库提示词
-        knowledge_prompt_context = "查询知识库搜索到相关信息如下:\b"
-        search_kwargs = {
-            "score_threshold": Config.ASSISTANT_RAG_SCORE_THRESHOLD,
-            "k": Config.ASSISTANT_RAG_TOP_K,
-        }
-        retriever_from_llm = MultiQueryRetriever.from_llm(
-            retriever=self.vector_store.as_retriever(search_kwargs=search_kwargs), llm=self.llm
-        )
-        docs = retriever_from_llm.invoke(human_msg.content)
-        knowledge_prompt_context += docs
+        knowledge_prompt_context = "\n查询知识库搜索到相关信息如下:\b"
+        knowledge_prompt_context += state.rag_docs
 
         # 4.记忆提示词
-        memory_context = "从历史对话中获取到的相关信息如下:\n"
-        memories = self.memory.search(human_msg.content, user_id=self.business_key)
-        memory_list = memories['results']
-        for memory in memory_list:
-            memory_context += f"- {memory['memory']}\n"
+        memory_context = "\n从历史对话中获取到的相关信息如下:\n"
+        memory_context += state.memory_content
+
+        # 5.所有任务信息
+        task_context = "\n你能使用的所有任务信息如下:\n"
+        task_context += "\n".join([task.to_desc() for task in state.tasks]) + "\n"
 
         prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content=[basic_system_prompt, reason_prompt_context, knowledge_prompt_context, memory_context].join("\n")),
+            SystemMessage(content="\n".join([basic_system_prompt, reason_prompt_context, knowledge_prompt_context, memory_context, task_context])),
             state.messages,
         ])
         chain = prompt | self.reasoner_llm
@@ -337,10 +370,15 @@ class AssistantService:
 
     def create_graph(self, graph_name):
         builder = StateGraph(AssistantState, input_schema=AssistantState)
+        builder.add_node(self.get_all_tasks)
+        builder.add_node(self.get_doc_content_from_vector)
+        builder.add_node(self.get_memories)
         builder.add_node(self.chat)
         builder.add_node(self.reason)
 
-        builder.add_edge(START, "reason")
+        builder.add_edge(START, self.get_all_tasks.__name__)
+        builder.add_edge(self.get_all_tasks.__name__, self.get_doc_content_from_vector.__name__)
+        builder.add_edge(self.get_doc_content_from_vector.__name__, self.get_memories.__name__)
         builder.add_edge("reason", "chat")
         builder.add_edge("chat", END)
 
@@ -413,12 +451,6 @@ def get_or_create_assistant_service(business_key) -> AssistantService:
 
 
 def create_assistant_service(business_key) -> AssistantService:
-    agent_def = agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
-
-    if agent_def is None:
-        raise Exception("未找到对应的agent定义")
-
-    service = AssistantService(agent_def.name, business_key, agent_def.system_prompt)
     service_map[business_key] = service
 
     return service
