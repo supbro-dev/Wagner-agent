@@ -38,6 +38,8 @@ async def welcome():
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
+
+
 @dataAnalystApi.route('/question', methods=['POST'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
