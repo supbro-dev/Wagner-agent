@@ -35,6 +35,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
 from openai import responses
+from quart import stream_with_context
 
 import container
 from config import Config
@@ -406,7 +407,7 @@ class DataAnalystService:
 
 
     # NODES
-    def intent_classifier(self, state: State):
+    async def intent_classifier(self, state: State):
         """
         意图判断节点
         :param state:
@@ -461,7 +462,7 @@ class DataAnalystService:
         parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
         chain = intent_prompt | self.llm | parser_with_llm
 
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "examples": examples,
         })
 
@@ -509,7 +510,7 @@ class DataAnalystService:
 
         return state
 
-    def default_node(self, state:State):
+    async def default_node(self, state:State):
         # 初次调用，使用原始用户查询
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=f"""
@@ -521,7 +522,7 @@ class DataAnalystService:
         ])
 
         chain = prompt | self.llm
-        response = chain.invoke({"user_input":"请介绍一下自己"})
+        response = await chain.ainvoke({"user_input":"请介绍一下自己"})
 
         return {
             "messages": [response],
@@ -655,7 +656,7 @@ class DataAnalystService:
             "messages": [cast(AIMessage, response)],
         }
 
-    def edit_task(self, state: State):
+    async def edit_task(self, state: State):
         parser = JsonOutputParser(pydantic_object=TaskSchema)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -688,7 +689,7 @@ class DataAnalystService:
         ]
 
         chain = prompt | self.llm | parser
-        response = chain.invoke({
+        response = await chain.ainvoke({
             "examples": examples,
         })
 
@@ -699,7 +700,7 @@ class DataAnalystService:
         return state
 
 
-    def delete_task(self, state:State):
+    async def delete_task(self, state:State):
         """
         删除任务
         :param state:
@@ -728,13 +729,13 @@ class DataAnalystService:
 
         chain = prompt | self.llm.bind_tools(self.delete_task_tool_list)
 
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
         }
 
-    def create_task(self, state:State):
+    async def create_task(self, state:State):
         """
         解析用户输入中对任务模板的补充
         :param state:
@@ -774,7 +775,7 @@ class DataAnalystService:
             ]
 
             chain = prompt | self.llm| parser
-            response = chain.invoke({
+            response = await chain.ainvoke({
                "examples": examples,
             })
 
@@ -875,7 +876,7 @@ class DataAnalystService:
             }
 
 
-    def convert_to_standard_format(self, state:State):
+    async def convert_to_standard_format(self, state:State):
         all_messages = state.messages
         last_ai_message = all_messages[-1]
 
@@ -898,7 +899,9 @@ class DataAnalystService:
                 A2\t2000
                 
                 """),
-                AIMessage('{"header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}')
+                AIMessage('{"data_exists":true, "header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}'),
+                AIMessage(f"今天员工工作情况没有查到任何数据"),
+                AIMessage('{"data_exists":false}'),
             ]
 
             parser = JsonOutputParser(pydantic_object=TableSchema)
@@ -932,7 +935,9 @@ class DataAnalystService:
                             A4\t4月\t4000
                             A5\t5月\t5000
                             """),
-                AIMessage('{"x_axis": ["1月", "2月", "3月", "4月", "5月"],"y_axis":[1000,2000,3000,4000,5000]，"x_name":"月份", "y_name":"效率值"}')
+                AIMessage('{"data_exists":true, "x_axis": ["1月", "2月", "3月", "4月", "5月"],"y_axis":[1000,2000,3000,4000,5000]，"x_name":"月份", "y_name":"效率值"}'),
+                AIMessage(f"今天员工工作情况没有查到任何数据"),
+                AIMessage('{"data_exists":false}'),
             ]
 
             parser = JsonOutputParser(pydantic_object=LineChartSchema)
@@ -942,14 +947,18 @@ class DataAnalystService:
         parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
         chain = prompt | self.llm | parser_with_llm
 
-        response = chain.invoke({"examples": examples})
+        response = await chain.ainvoke({"examples": examples})
 
-        return {
-            "last_run_msg_id": last_ai_message.id,
-            "last_standard_data": str(response)
-        }
+        data_exists = response["data_exists"]
+        if data_exists:
+            return {
+                "last_run_msg_id": last_ai_message.id,
+                "last_standard_data": json.dumps(response)
+            }
+        else:
+            return state
 
-    def how_to_improve_task(self, state:State):
+    async def how_to_improve_task(self, state:State):
         """
         在用户更新任务模板的过程中，对比模板是否填写完善
         :param state:
@@ -986,7 +995,7 @@ class DataAnalystService:
 
             chain = prompt | self.llm
 
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
@@ -1140,7 +1149,7 @@ class DataAnalystService:
 
         return names
 
-    def get_event_stream_function_(self, input: str | None, session_id, stream_type: Literal["question", "resume"]):
+    def get_event_stream_function(self, input: str | None, session_id, stream_type: Literal["question", "resume"]):
         """
         获取流式方法，这个方法直接返回给前端使用
         :param input:
@@ -1149,6 +1158,7 @@ class DataAnalystService:
         :return: event_stream
         """
 
+        @stream_with_context
         async def async_event_stream():
             try:
                 # 根据不同的流类型获取对应的流
@@ -1161,6 +1171,7 @@ class DataAnalystService:
 
                 # 直接异步迭代处理流数据
                 async for stream_mode, detail in stream:
+                    # print(stream_mode, detail)
                     if stream_mode == "messages":
                         chunk, metadata = detail
                         if metadata['langgraph_node'] in AI_CHAT_NODES:
@@ -1173,10 +1184,11 @@ class DataAnalystService:
                             content = get_tasks_mode_ai_msg_content(detail)
                             if content is not None:
                                 yield f"data: {json.dumps({'msgId': detail['id'], 'token': content})}\n\n"
-
+                # print("ready to done")
                 yield "event: done\ndata: \n\n"
 
             except Exception as e:
+                print("EXxXXXXXXXXXXXXXXX")
                 logging.error(f"Stream processing error: {e}")
                 yield f"event: error\ndata: {str(e)}\n\n"
                 yield "event: done\ndata: \n\n"
@@ -1184,60 +1196,6 @@ class DataAnalystService:
         return async_event_stream
 
 
-    # def get_event_stream_function(self, input:str | None, session_id, stream_type:Literal["question", "resume"]):
-    #     """
-    #     获取流式方法，这个方法直接返回给前端使用
-    #     :param input:
-    #     :param session_id:
-    #     :param stream_type; 是提问还是中断的回复
-    #     :return: event_stream
-    #     """
-    #     def event_stream():
-    #
-    #         # 为每个请求创建专用队列
-    #         data_queue = queue.Queue()
-    #
-    #         def run_workflow():
-    #             try:
-    #                 if stream_type == "question":
-    #                     stream = self.stream_question(input, session_id)
-    #                 elif stream_type == "resume":
-    #                     stream = self.stream_resume(input, session_id)
-    #                 else:
-    #                     stream = self.default(session_id)
-    #
-    #
-    #                 async for stream_mode, detail in stream:
-    #                     if stream_mode == "messages":
-    #                         chunk, metadata = detail
-    #                         if metadata['langgraph_node'] in AI_CHAT_NODES:
-    #                             # print("question", stream_mode, detail)
-    #                             content = chunk.content
-    #                             data_queue.put({"msgId":chunk.id, "token": content})
-    #                     elif stream_mode == "tasks":
-    #                         # print("question", stream_mode, detail)
-    #                         if "interrupts" in detail and len(detail["interrupts"]) > 0:
-    #                             data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
-    #                         elif detail["name"] in AI_MSG_NODES:
-    #                             content = get_tasks_mode_ai_msg_content(detail)
-    #                             if content is not None:
-    #                                 data_queue.put({"msgId":detail["id"], "token": content})
-    #             finally:
-    #                 data_queue.put(None)
-    #
-    #         # 启动 LangGraph 线程
-    #         threading.Thread(target=run_workflow).start()
-    #
-    #         # 从队列获取数据并发送
-    #         while True:
-    #             data = data_queue.get()
-    #             if data is None:
-    #                 yield "event: done\ndata: \n\n"
-    #                 break
-    #             # 格式化为 SSE 事件
-    #             yield f"data: {json.dumps(data)}\n\n"
-    #
-    #     return event_stream
 
     def get_state_properties(self, session_id, state_property_names):
         """

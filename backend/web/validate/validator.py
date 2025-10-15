@@ -1,26 +1,35 @@
 from functools import wraps
-
-from flask import request
+from quart import request, g
 from flask_marshmallow import Schema
 from marshmallow import ValidationError
-
 from model.response import failure_with_ex
+import asyncio
 
 def validate_query_params(**field_definitions):
-    """
-    动态生成 Schema 的装饰器
-    :param field_definitions: 字段定义，如 `businessKey=fields.Str(required=True)`
-    """
     def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                # 动态创建 Schema
-                schema_cls = Schema.from_dict(field_definitions)
-                validated_data = schema_cls().load(request.args.to_dict())
-                request.validated_data = validated_data
-                return func(*args, **kwargs)
-            except ValidationError as err:
-                return failure_with_ex(err)
-        return wrapper
+        # 根据原函数决定返回同步还是异步包装器
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                try:
+                    schema_cls = Schema.from_dict(field_definitions)
+                    query_params = dict(request.args)
+                    validated_data = schema_cls().load(query_params)
+                    g.validated_data = validated_data
+                    return await func(*args, **kwargs)
+                except ValidationError as err:
+                    return failure_with_ex(err)
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                try:
+                    schema_cls = Schema.from_dict(field_definitions)
+                    query_params = dict(request.args)
+                    validated_data = schema_cls().load(query_params)
+                    g.validated_data = validated_data
+                    return func(*args, **kwargs)
+                except ValidationError as err:
+                    return failure_with_ex(err)
+            return sync_wrapper
     return decorator

@@ -105,52 +105,38 @@ const Data_analyst = () => {
         setBubbleLoading(true)
         setShowNewAiBubble(true)
 
-        doStream(`/admin/talk?query=北京现在天气怎么样？`,
+        const firstGetEvent = {current:false}
+        const lastMsgId = {current:null}
+        const businessKey = workplaceCode + '-' + workGroupCode
+        doStream(`/agentApi/v1/dataAnalyst/welcome?businessKey=${businessKey}&sessionId=${sessionId}`,
             (event) => {
                 // 注意：SSE的默认事件类型是'message'，数据在event.data中
                 if (event.data) {
-                    console.log(event.data)
+                    if (!firstGetEvent.current) {
+                        firstGetEvent.current = true
+                        setBubbleLoading(false)
+                    }
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.token) {
+                            if (!lastMsgId.current && data.msgId) {
+                                lastMsgId.current = data.msgId;
+                                setConversationId(data.msgId)
+                            }
+                            setResponse(prev => prev + data.token); // 增量更新
+                        }
+                    } catch (e) {
+                        console.error('解析错误', e);
+                    }
                 }
             },
             () => {
+                setLoading(false);
+                getFrequentlyAndUsuallyTasks(workplaceCode, workGroupCode)
             },
             () => {
                 setLoading(false);
             })
-
-
-        // const firstGetEvent = {current:false}
-        // const lastMsgId = {current:null}
-        // const businessKey = workplaceCode + '-' + workGroupCode
-        // doStream(`/agentApi/v1/dataAnalyst/welcome?businessKey=${businessKey}&sessionId=${sessionId}`,
-        //     (event) => {
-        //         // 注意：SSE的默认事件类型是'message'，数据在event.data中
-        //         if (event.data) {
-        //             if (!firstGetEvent.current) {
-        //                 firstGetEvent.current = true
-        //                 setBubbleLoading(false)
-        //             }
-        //             try {
-        //                 const data = JSON.parse(event.data);
-        //                 if (data.token) {
-        //                     if (!lastMsgId.current && data.msgId) {
-        //                         lastMsgId.current = data.msgId;
-        //                         setConversationId(data.msgId)
-        //                     }
-        //                     setResponse(prev => prev + data.token); // 增量更新
-        //                 }
-        //             } catch (e) {
-        //                 console.error('解析错误', e);
-        //             }
-        //         }
-        //     },
-        //     () => {
-        //         setLoading(false);
-        //         getFrequentlyAndUsuallyTasks(workplaceCode, workGroupCode)
-        //     },
-        //     () => {
-        //         setLoading(false);
-        //     })
     }
 
     const getSessionId = () => {

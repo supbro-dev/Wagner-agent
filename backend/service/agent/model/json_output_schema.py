@@ -43,6 +43,10 @@ class TaskSchema(BaseModel):
 
 # 表格的模板
 class TableSchema(BaseModel):
+    data_exists: Optional[bool] = Field(
+        default=None,
+        description="表格数据是否存在"
+    )
     header_list: Optional[list[str]] = Field(
         default=None,
         description="表格的表头"
@@ -52,6 +56,10 @@ class TableSchema(BaseModel):
         description="表格的数据"
     )
 class LineChartSchema(BaseModel):
+    data_exists: Optional[bool] = Field(
+        default=None,
+        description="折线图数据是否存在"
+    )
     x_axis: Optional[list[str]] = Field(
         default=None,
         description="折线图的X轴"

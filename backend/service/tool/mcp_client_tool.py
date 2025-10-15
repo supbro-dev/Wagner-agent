@@ -20,6 +20,9 @@ async def create_mcp_client_tools(lms_tool_entity_list: list[LLMToolEntity]):
         connections[tool_entity.name] = json.loads(tool_entity.content)
 
     client = MultiServerMCPClient(connections)
-    tools = await client.get_tools()
-
-    return tools
+    try:
+        tools = await client.get_tools()
+        return tools
+    except Exception as e:
+        print(f"创建MCP客户端工具失败: {e}")
+        return []

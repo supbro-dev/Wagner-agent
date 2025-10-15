@@ -1,5 +1,3 @@
-from quart import Quart
-
 from config import Config
 from init import create_app
 
