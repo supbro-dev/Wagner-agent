@@ -5,6 +5,8 @@ def create_app(Config=None):
     """应用工厂函数"""
     app = Quart(__name__)
     app.config.from_object(Config)
+    # 必须设置，推理模型推理过程可能很长，默认1分钟超时
+    app.config['RESPONSE_TIMEOUT'] = 600
 
     # # 注册蓝图
     from web.data_analyst_controller import dataAnalystApi

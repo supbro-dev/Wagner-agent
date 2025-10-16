@@ -12,7 +12,9 @@ from service.agent.model.state import InputState
 @dataclass
 class AssistantState(InputState):
 
-    tasks: list[QueryDataTaskDetail] = field(default_factory=list)
+    # 查询任务相关
+    task_names: list[str] = field(default_factory=list)
+    task_details: list[QueryDataTaskDetail] = field(default_factory=list)
 
     # 推理内容
     reasoning_context : str = ""
@@ -21,5 +23,5 @@ class AssistantState(InputState):
     rag_docs: list = field(default_factory=list)
 
     # 记忆内容
-    memory_content:str = ""
+    memories:list = field(default_factory=list)
 

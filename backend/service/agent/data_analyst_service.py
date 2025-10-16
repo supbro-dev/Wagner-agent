@@ -55,6 +55,7 @@ from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
 from service.tool.llm_http_tool import create_llm_http_tool
 from service.tool.mcp_client_tool import create_mcp_client_tools
+from util import datetime_util
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
 from pydantic import BaseModel, Field, create_model
@@ -173,7 +174,7 @@ class DataAnalystService:
         if agent_def is None:
             raise ValueError(f"未找到业务键{business_key}对应的Agent")
 
-        self.basic_system_template = agent_def.system_prompt
+        self.basic_system_template = agent_def.system_prompt + f"\n当前日期:{datetime_util.get_current_date()}"
 
         # 设置业务用所有工具方法
         self.business_tool_list = self.get_business_tool_list(agent_def)
@@ -1291,12 +1292,12 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     :return:
     """
     if "result" in detail:
-        for r in detail["result"]:
-            if r[0] == "messages":
-                msgs = r[1]
-                for m in msgs:
-                    if m[0] == "ai":
-                        return m[1]
+        result_dict = dict(detail["result"])
+        msgs = result_dict["messages"]
+        for m in msgs:
+            msg_dict = dict(m)
+            if "ai" in msg_dict:
+                return msg_dict["di"]
     return None
 
 

@@ -16,6 +16,7 @@ class InputState:
     messages: Annotated[Sequence[AnyMessage], add_messages] = field(
         default_factory=list
     )
+    session_id: str | None = None
 
 @dataclass
 class State(InputState):

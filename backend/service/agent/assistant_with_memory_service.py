@@ -36,7 +36,9 @@ from werkzeug.utils import secure_filename
 from config import Config
 from container import dao_container
 from dao.agent_def_dao import AgentDefDAO
+from dao.query_data_task_dao import QueryDataTaskDAO
 from entity.agent_def_entity import AgentDefType
+from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.data_analyst_service import get_service
 from service.agent.model.assistant_state import AssistantState
 from service.agent.model.state import InputState
@@ -47,7 +49,7 @@ from util.config_util import read_private_config
 
 service_map = {}
 
-AI_CHAT_NODES = ["chat"]
+AI_CHAT_NODES = ["chat", "reason"]
 
 
 class AssistantService:
@@ -63,11 +65,13 @@ class AssistantService:
     memory: Memory
 
     agent_def_dao:AgentDefDAO
+    query_data_task_dao:QueryDataTaskDAO
 
 
     def __init__(self, business_key):
         self.business_key = business_key
 
+        self.query_data_task_dao = dao_container.query_data_task_dao()
         self.agent_def_dao = dao_container.agent_def_dao()
         agent_def = self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
 
@@ -86,29 +90,30 @@ class AssistantService:
         self.llm = ChatDeepSeek(
             model=Config.LLM_MODEL,
             temperature=0,
-            max_tokens=None,
-            timeout=None,
+            max_tokens=8192,
+            timeout=60000,
             max_retries=2,
             api_key=api_key
         )
 
         self.reasoner_llm = ChatDeepSeek(
             model=Config.REASONER_LLM_MODEL,
-            temperature=0,
-            max_tokens=None,
-            timeout=None,
+            max_tokens=8192,
+            timeout=60000,
             max_retries=2,
-            api_key=api_key
+            api_key=api_key,
+            stream_usage = True,
         )
 
         # 初始化记忆(mem0)
         self.memory = self.create_memory()
+        # 创建数据员子图调用工具
+        self.data_analyst_tool = [ask_data_analyst]
         # 初始化langGraph
         self.graph = self.create_graph(agent_def.name)
         # 创建rag专用向量存储
         self.vector_store = self.create_vector_store()
-        # 创建数据员子图调用工具
-        self.data_analyst_tool = [ask_data_analyst]
+
 
 
 
@@ -128,12 +133,32 @@ class AssistantService:
 
                 # 直接异步迭代处理流数据
                 async for stream_mode, detail in stream:
-
                     if stream_mode == "messages":
                         chunk, metadata = detail
                         if metadata['langgraph_node'] in AI_CHAT_NODES:
                             content = chunk.content
-                            yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
+                            if "reasoning_content" in chunk.additional_kwargs:
+                                reasoning_content = chunk.additional_kwargs['reasoning_content']
+                                yield f"data: {json.dumps({'msgId': chunk.id, "reasoningContent": reasoning_content})}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
+                    elif stream_mode == "tasks":
+                        if detail["name"] == self.get_all_tasks.__name__ and "result" in detail:
+                            for tuple in detail["result"]:
+                                result_dict = {tuple[0]:tuple[1]}
+                                if "task_names" in result_dict:
+                                    task_names = result_dict["task_names"]
+                                    yield f"data: {json.dumps({'taskSize': len(task_names), 'taskNames':",".join(task_names)})}\n\n"
+                        elif detail["name"] == self.get_doc_content_from_vector.__name__ and "result" in detail:
+                            tuple = detail["result"][0]
+                            result_dict = {tuple[0]: tuple[1]}
+                            rag_docs = result_dict["rag_docs"]
+                            yield f"data: {json.dumps({'ragDocSize': len(rag_docs)})}\n\n"
+                        elif detail["name"] == self.get_memories.__name__ and "result" in detail:
+                            tuple = detail["result"][0]
+                            result_dict = {tuple[0]: tuple[1]}
+                            memories = result_dict["memories"]
+                            yield f"data: {json.dumps({'memorySize': len(memories)})}\n\n"
                 yield "event: done\ndata: \n\n"
 
             except Exception as e:
@@ -143,7 +168,7 @@ class AssistantService:
 
         return async_event_stream
 
-    async def stream_question(self, query, session_id):
+    def stream_question(self, query, session_id):
         """
         流式触发graph
         :param query: 用户提问信息
@@ -156,9 +181,9 @@ class AssistantService:
         )
 
         stream = self.graph.astream(
-            input=InputState(messages=[("user", query)]),
+            input=InputState(messages=[("user", query)], session_id = session_id),
             config=config,
-            stream_mode=["messages"]
+            stream_mode=["messages", "tasks"]
         )
 
         return stream
@@ -168,10 +193,18 @@ class AssistantService:
         获取所有的任务
         :return:state
         """
-        tasks = self.agent_def_dao.get_all_tasks(self.business_key)
+        tasks = self.query_data_task_dao.get_all_tasks(self.business_key)
+
+        task_details = []
+        task_names = []
+        for task in tasks:
+            task_names.append(task.name)
+            task_detail = QueryDataTaskDetail.model_validate(json.loads(task.task_detail))
+            task_details.append(task_detail)
 
         return {
-            "tasks": tasks,
+            "task_details": task_details,
+            "task_names": task_names,
         }
 
     def get_doc_content_from_vector(self, state:AssistantState):
@@ -197,72 +230,120 @@ class AssistantService:
         memories = self.memory.search(human_msg.content, user_id=self.business_key)
         memory_list = memories['results']
 
-        memory_content = ""
-        for memory in memory_list:
-            memory_content += f"- {memory['memory']}\n"
-
         return {
-            "memory_content": memory_content,
+            "memories": memory_list,
         }
 
 
-    def reason(self, state: AssistantState):
+    async def reason(self, state: AssistantState):
         """
         使用llm进行推理
         :param state:
         :return:state
         """
         # 1.basic提示词
-        basic_system_prompt = self.basic_system_template
+        basic_system_prompt = self.basic_system_template \
+                + f""""
+                当前日期:{datetime_util.get_current_date()}             
+"""
 
         # 2.推理专用提示词
         reason_prompt_context = prompts.get_assistant_system_prompt()
 
         # 3.知识库提示词
-        knowledge_prompt_context = "\n查询知识库搜索到相关信息如下:\b"
-        knowledge_prompt_context += state.rag_docs
+        knowledge_prompt_context = "\n查询知识库搜索到相关信息如下:\n"
+        if len(state.rag_docs) > 0:
+            knowledge_prompt_context += state.rag_docs
+        else:
+            knowledge_prompt_context += "无"
+
 
         # 4.记忆提示词
         memory_context = "\n从历史对话中获取到的相关信息如下:\n"
-        memory_context += state.memory_content
+        if len(state.memories) > 0:
+            for memory in state.memories:
+                memory_context += f"{memory.content}\n"
+        else:
+            memory_context += "无"
 
         # 5.所有任务信息
         task_context = "\n你能使用的所有任务信息如下:\n"
-        task_context += "\n".join([task.to_desc() for task in state.tasks]) + "\n"
+        if len(state.task_names) > 0:
+            task_context += "\n".join([f"任务名：{name}\n {detail.to_desc_for_llm()}\n" for name, detail in zip(state.task_names, state.task_details)]) + "\n"
+        else:
+            task_context += "无"
 
+        all_messages = state.messages
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content="\n".join([basic_system_prompt, reason_prompt_context, knowledge_prompt_context, memory_context, task_context])),
-            state.messages,
+            *all_messages,
         ])
         chain = prompt | self.reasoner_llm
-        response = chain.invoke({})
+        config = RunnableConfig(
+            configurable={"timeout": 600000}
+        )
+        response = await chain.ainvoke({},
+            config=config,
+        )
 
         return {
             "reasoning_context": response.content,
         }
 
+    def find_last_human_message(self, messages) -> (int, HumanMessage):
+        """
+        从后往前查找最后一条HumanMessage
+        """
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], HumanMessage):
+                return i, messages[i]
+        return -1, None
 
-    def chat(self, state: AssistantState):
+
+    async def chat(self, state: AssistantState):
         """
         使用llm进行对话(并查找过往记忆)
         :param state:
         :return:state
         """
-        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
+        all_messages = state.messages
 
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content=f"""
-            {self.basic_system_template}
-            
-            你需要执行的操作是:
-            {state.reasoning_context}
-            """),
-            state.messages,
-        ])
-        chain = prompt | self.llm.bind_tools(self.data_analyst_tool)
-        response = chain.invoke({})
+        # 如果是工具返回后的再次调用
+        if isinstance(all_messages[-1], ToolMessage):
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                {self.basic_system_template}
+    
+               当前日期:{datetime_util.get_current_date()}            
+               当前对话的sessionId = {state.session_id}
+               业务键(businessKey) = {self.business_key}
+                
+                你需要执行的操作是:
+                {state.reasoning_context}
+                """),
+                *all_messages,
+            ])
+            chain = prompt | self.llm.bind_tools(self.data_analyst_tool)
+        else:
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""
+                            {self.basic_system_template}
+
+                           当前日期:{datetime_util.get_current_date()}            
+                           当前对话的sessionId = {state.session_id}
+                           业务键(businessKey) = {self.business_key}
+
+                            你需要执行的操作是:
+                            {state.reasoning_context}
+                            """),
+                all_messages[-1], # 取最后一条直接执行命令
+            ])
+            chain = prompt | self.llm.bind_tools(self.data_analyst_tool)
+        response = await chain.ainvoke({})
 
         if response.tool_calls is None or len(response.tool_calls) == 0:
+            _, human_msg = self.find_last_human_message(all_messages)
+
             response_content = response.content
             if response_content != "" :
                 # Store the interaction in Mem0
@@ -288,6 +369,18 @@ class AssistantService:
         return {
             "messages": [response],
         }
+
+    def need_invoke_tool(self, state: AssistantState) -> Literal["chat_tool", END]:
+        last_message = state.messages[-1]
+        if not isinstance(last_message, AIMessage):
+            raise ValueError(
+                f"Expected AIMessage in output edges, but got {type(last_message).__name__}"
+            )
+
+        if not last_message.tool_calls:
+            return END
+        else:
+            return "chat_tool"
 
 
     def create_memory(self):
@@ -373,14 +466,17 @@ class AssistantService:
         builder.add_node(self.get_all_tasks)
         builder.add_node(self.get_doc_content_from_vector)
         builder.add_node(self.get_memories)
-        builder.add_node(self.chat)
         builder.add_node(self.reason)
+        builder.add_node(self.chat)
+        builder.add_node("chat_tool", ToolNode(self.data_analyst_tool))
 
         builder.add_edge(START, self.get_all_tasks.__name__)
         builder.add_edge(self.get_all_tasks.__name__, self.get_doc_content_from_vector.__name__)
         builder.add_edge(self.get_doc_content_from_vector.__name__, self.get_memories.__name__)
-        builder.add_edge("reason", "chat")
-        builder.add_edge("chat", END)
+        builder.add_edge(self.get_memories.__name__, self.reason.__name__)
+        builder.add_edge(self.reason.__name__, self.chat.__name__)
+        builder.add_conditional_edges(self.chat.__name__, self.need_invoke_tool)
+        builder.add_edge("chat_tool", self.chat.__name__)
 
         # 记忆功能
         if Config.MEMORY_USE == "local":
@@ -428,7 +524,7 @@ class AssistantService:
         return content
 
 @tool
-def ask_data_analyst(business_key, session_id, task_name):
+async def ask_data_analyst(business_key, session_id, task_name):
     """
     根据业务键和任务名，执行任务并返回任务结果
 
@@ -451,8 +547,8 @@ def get_or_create_assistant_service(business_key) -> AssistantService:
 
 
 def create_assistant_service(business_key) -> AssistantService:
+    service = AssistantService(business_key)
     service_map[business_key] = service
-
     return service
 
 def get_assistant_service(business_key):

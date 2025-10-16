@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from util import datetime_util
+
 ASSISTANT_REASON_PROMPT = """
 您现在要负责将用户需求转化为可执行的线性操作流程。请严格遵循以下工作原则：
 
@@ -45,4 +47,4 @@ ASSISTANT_REASON_PROMPT = """
 """
 
 def get_assistant_system_prompt():
-    return ASSISTANT_REASON_PROMPT.format(current_date=datetime.now().strftime("%Y-%m-%d"))
+    return ASSISTANT_REASON_PROMPT.format(current_date=datetime_util.get_current_date())
