@@ -1404,3 +1404,9 @@ def add_human_in_the_loop(
         return tool_response
 
     return call_tool_with_interrupt
+
+def get_or_create_data_analyst_service(business_key) -> DataAnalystService:
+    data_analyst_service = get_service(business_key)
+    if data_analyst_service is None:
+        data_analyst_service = create_service(business_key, business_key)
+    return data_analyst_service

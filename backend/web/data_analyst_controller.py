@@ -4,7 +4,8 @@ from marshmallow import fields
 from quart import Blueprint, jsonify, Response, g
 
 from model.response import success
-from service.agent.data_analyst_service import create_service, get_service, DataAnalystService
+from service.agent.data_analyst_service import create_service, get_service, DataAnalystService, \
+    get_or_create_data_analyst_service
 from web.validate.validator import validate_query_params
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
@@ -132,9 +133,3 @@ async def question_stream():
 
     return Response(event_stream(), mimetype='text/event-stream')
 
-
-def get_or_create_data_analyst_service(business_key) -> DataAnalystService:
-    data_analyst_service = get_service(business_key)
-    if data_analyst_service is None:
-        data_analyst_service = create_service(business_key, business_key)
-    return data_analyst_service
