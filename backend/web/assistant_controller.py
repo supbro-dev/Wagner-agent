@@ -2,13 +2,13 @@ import os
 import tempfile
 from datetime import datetime
 
-from flask import Blueprint, request, jsonify, Response, stream_with_context
+from quart import Blueprint, request, jsonify, Response, stream_with_context
 from langchain_community.document_loaders import UnstructuredMarkdownLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from werkzeug.utils import secure_filename
 
 from model.response import success
-from service.agent.assistant_service import create_assistant_service, get_assistant_service, \
+from service.agent.assistant_with_memory_service import create_assistant_service, get_assistant_service, \
     get_or_create_assistant_service
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
@@ -17,19 +17,19 @@ assistantApi = Blueprint('assistant', __name__)
 
 
 @assistantApi.route('/welcome', methods=['GET'])
-def welcome():
+async def welcome():
     business_key = request.args.get('businessKey')
 
     assistant_service = get_or_create_assistant_service(business_key)
 
-    answer = AnswerVo(content="您好好，我是您的AI助手，请问有什么可以帮您？")
+    answer = AnswerVo(content="您好，我是您的AI助手，请问有什么可以帮您？")
 
     return jsonify(success(answer).to_dict())
 
 
 
 @assistantApi.route('/askAssistant', methods=['GET'])
-def ask_assistant():
+async def ask_assistant():
     question = request.args.get('question')
     session_id = request.args.get('sessionId')
     business_key = request.args.get('businessKey')
@@ -38,7 +38,7 @@ def ask_assistant():
 
     event_stream = assistant_service.get_event_stream_function(question, session_id)
 
-    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+    return Response(event_stream(), mimetype='text/event-stream')
 
 
 @assistantApi.route('/uploadFile', methods=['POST'])

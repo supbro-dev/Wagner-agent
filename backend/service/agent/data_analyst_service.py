@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -7,7 +8,7 @@ import time
 from enum import StrEnum
 
 import redis
-from typing import Callable
+from typing import Callable, Any
 from typing import List
 from typing import Literal
 from typing import Optional, cast
@@ -21,7 +22,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, System
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool as create_tool
+from langchain_core.tools import BaseTool, tool as create_tool, ArgsSchema
 from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -34,18 +35,32 @@ from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.interrupt import HumanInterruptConfig, HumanInterrupt
 from langgraph.types import interrupt, Command, Interrupt
 from openai import responses
+from quart import stream_with_context
 
+import container
 from config import Config
 from dao import query_data_task_dao
+from dao.agent_def_dao import AgentDefDAO
+from dao.llm_tool_dao import LLMToolDAO
+from dao.query_data_task_dao import QueryDataTaskDAO
+from entity.agent_def_entity import AgentDefType, AgentDefEntity
+from entity.llm_tool_entity import LLMToolType, LLMToolEntity
 from entity.query_data_task_entity import QueryDataTaskEntity
+from model.llm_http_tool_content import LLMHTTPToolContent
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
+from service.tool.llm_http_tool import create_llm_http_tool
+from service.tool.mcp_client_tool import create_mcp_client_tools
+from util import datetime_util
 from util.config_util import read_private_config
 from langgraph.checkpoint.redis import RedisSaver
+from pydantic import BaseModel, Field, create_model
+
+from util.http_util import http_get, http_post
 
 # 配置基础日志设置（输出到控制台）
 logging.basicConfig(
@@ -127,8 +142,17 @@ class DataAnalystService:
     # 向量存储
     vector_store: RedisVectorStore
 
-    def __init__(self, service_name, business_key:str, basic_system_template:str, business_tool_list):
+    # dao
+    agent_def_dao: AgentDefDAO
+    query_data_task_dao: QueryDataTaskDAO
+    llm_tool_dao: LLMToolDAO
+
+    def __init__(self, service_name, business_key:str):
         self.business_key = business_key
+
+        self.agent_def_dao = container.dao_container.agent_def_dao()
+        self.query_data_task_dao = container.dao_container.query_data_task_dao()
+        self.llm_tool_dao = container.dao_container.llm_tool_dao()
 
         # 初始化大模型
         os.environ["LANGSMITH_TRACING"] = "true"
@@ -146,13 +170,17 @@ class DataAnalystService:
             api_key=api_key
         )
 
-        self.basic_system_template = basic_system_template
+        agent_def = self.get_agent_def(business_key)
+        if agent_def is None:
+            raise ValueError(f"未找到业务键{business_key}对应的Agent")
+
+        self.basic_system_template = agent_def.system_prompt + f"\n当前日期:{datetime_util.get_current_date()}"
 
         # 设置业务用所有工具方法
-        self.business_tool_list = business_tool_list
+        self.business_tool_list = self.get_business_tool_list(agent_def)
 
         # 设置业务用所有工具方法
-        self.execute_with_business_tool_list = [*business_tool_list, execute_once]
+        self.execute_with_business_tool_list = [*self.business_tool_list, self.execute_once]
 
         # 删除任务的工具
         self.delete_task_tool_list = [add_human_in_the_loop(self.logical_delete_task, [WorkflowResume(resume_type="accept", resume_desc="删除", resume_mode="invoke")], lambda tool_input: f"是否确定要删除任务：{tool_input["task_name"]}?")]
@@ -279,7 +307,7 @@ class DataAnalystService:
             callbacks=CallbackManager([handler])
         )
 
-        stream = self.graph.stream(
+        stream = self.graph.astream(
             input=InputState(messages=[("user", query)]),
             config=config,
             stream_mode=["messages", "tasks"]
@@ -302,7 +330,7 @@ class DataAnalystService:
             callbacks=CallbackManager([handler])
         )
 
-        stream = self.graph.stream(
+        stream = self.graph.astream(
             input=InputState(
                 messages=[],
             ),
@@ -380,7 +408,7 @@ class DataAnalystService:
 
 
     # NODES
-    def intent_classifier(self, state: State):
+    async def intent_classifier(self, state: State):
         """
         意图判断节点
         :param state:
@@ -435,7 +463,7 @@ class DataAnalystService:
         parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
         chain = intent_prompt | self.llm | parser_with_llm
 
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "examples": examples,
         })
 
@@ -483,7 +511,7 @@ class DataAnalystService:
 
         return state
 
-    def default_node(self, state:State):
+    async def default_node(self, state:State):
         # 初次调用，使用原始用户查询
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=f"""
@@ -495,7 +523,7 @@ class DataAnalystService:
         ])
 
         chain = prompt | self.llm
-        response = chain.invoke({"user_input":"请介绍一下自己"})
+        response = await chain.ainvoke({"user_input":"请介绍一下自己"})
 
         return {
             "messages": [response],
@@ -508,7 +536,7 @@ class DataAnalystService:
         :param state:
         :return:state
         """
-        query_data_task = find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
+        query_data_task = self.find_task_by_id_or_name(state.task_id, state.task_name, self.business_key)
 
         if query_data_task is not None:
             detail = QueryDataTaskDetail.model_validate(json.loads(query_data_task.task_detail))
@@ -545,7 +573,7 @@ class DataAnalystService:
 
         return state
 
-    def execute_task(self, state:State):
+    async def execute_task(self, state:State):
         """
         调用工具执行任务
         :param state:
@@ -568,7 +596,7 @@ class DataAnalystService:
                 *all_messages  # 包含所有历史消息
             ])
             chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
             return {
                 "messages": [response],
             }
@@ -594,12 +622,12 @@ class DataAnalystService:
             ])
 
             chain = prompt | self.llm.bind_tools(self.execute_with_business_tool_list)
-            response = chain.invoke({"user_input": last_human_message})
+            response = await chain.ainvoke({"user_input": last_human_message})
             return {
                 "messages": [response],
             }
 
-    def query_data(self, state: State):
+    async def query_data(self, state: State):
         """
         使用llm+业务工具进行对话和数据查询
         :param state:
@@ -612,7 +640,7 @@ class DataAnalystService:
             *all_messages  # 包含所有历史消息
         ])
         chain = prompt | self.llm.bind_tools(self.business_tool_list)
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
@@ -629,7 +657,7 @@ class DataAnalystService:
             "messages": [cast(AIMessage, response)],
         }
 
-    def edit_task(self, state: State):
+    async def edit_task(self, state: State):
         parser = JsonOutputParser(pydantic_object=TaskSchema)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -662,7 +690,7 @@ class DataAnalystService:
         ]
 
         chain = prompt | self.llm | parser
-        response = chain.invoke({
+        response = await chain.ainvoke({
             "examples": examples,
         })
 
@@ -673,7 +701,7 @@ class DataAnalystService:
         return state
 
 
-    def delete_task(self, state:State):
+    async def delete_task(self, state:State):
         """
         删除任务
         :param state:
@@ -702,13 +730,13 @@ class DataAnalystService:
 
         chain = prompt | self.llm.bind_tools(self.delete_task_tool_list)
 
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
         }
 
-    def create_task(self, state:State):
+    async def create_task(self, state:State):
         """
         解析用户输入中对任务模板的补充
         :param state:
@@ -748,7 +776,7 @@ class DataAnalystService:
             ]
 
             chain = prompt | self.llm| parser
-            response = chain.invoke({
+            response = await chain.ainvoke({
                "examples": examples,
             })
 
@@ -776,9 +804,9 @@ class DataAnalystService:
 
         if state.task_id is not None:
             entity.id = state.task_id
-            id = query_data_task_dao.save(entity)
+            id = self.query_data_task_dao.save(entity)
         else:
-            id = query_data_task_dao.save(entity)
+            id = self.query_data_task_dao.save(entity)
 
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
@@ -797,7 +825,7 @@ class DataAnalystService:
         }
 
 
-    def test_run_task(self, state:State):
+    async def test_run_task(self, state:State):
         """
         任务试跑
         :param state:
@@ -824,7 +852,7 @@ class DataAnalystService:
             ])
 
             chain = prompt | self.llm.bind_tools(self.business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
         else:
             # 与工具返回后的调用区别在于，这里不传所有历史信息
             prompt = ChatPromptTemplate.from_messages([
@@ -842,14 +870,14 @@ class DataAnalystService:
                            """),
             ])
             chain = prompt | self.llm.bind_tools(self.business_tool_list)
-            response = chain.invoke({})
+            response = await chain.ainvoke({})
 
         return {
             "messages": [response],
             }
 
 
-    def convert_to_standard_format(self, state:State):
+    async def convert_to_standard_format(self, state:State):
         all_messages = state.messages
         last_ai_message = all_messages[-1]
 
@@ -872,7 +900,9 @@ class DataAnalystService:
                 A2\t2000
                 
                 """),
-                AIMessage('{"header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}')
+                AIMessage('{"data_exists":true, "header_list": ["员工工号","员工工作量"],"data_list":[["A1"，"1000"], ["A2","2000"]]}'),
+                AIMessage(f"今天员工工作情况没有查到任何数据"),
+                AIMessage('{"data_exists":false}'),
             ]
 
             parser = JsonOutputParser(pydantic_object=TableSchema)
@@ -906,7 +936,9 @@ class DataAnalystService:
                             A4\t4月\t4000
                             A5\t5月\t5000
                             """),
-                AIMessage('{"x_axis": ["1月", "2月", "3月", "4月", "5月"],"y_axis":[1000,2000,3000,4000,5000]，"x_name":"月份", "y_name":"效率值"}')
+                AIMessage('{"data_exists":true, "x_axis": ["1月", "2月", "3月", "4月", "5月"],"y_axis":[1000,2000,3000,4000,5000]，"x_name":"月份", "y_name":"效率值"}'),
+                AIMessage(f"今天员工工作情况没有查到任何数据"),
+                AIMessage('{"data_exists":false}'),
             ]
 
             parser = JsonOutputParser(pydantic_object=LineChartSchema)
@@ -916,14 +948,18 @@ class DataAnalystService:
         parser_with_llm = OutputFixingParser.from_llm(parser=parser, llm=self.llm)
         chain = prompt | self.llm | parser_with_llm
 
-        response = chain.invoke({"examples": examples})
+        response = await chain.ainvoke({"examples": examples})
 
-        return {
-            "last_run_msg_id": last_ai_message.id,
-            "last_standard_data": str(response)
-        }
+        data_exists = response["data_exists"]
+        if data_exists:
+            return {
+                "last_run_msg_id": last_ai_message.id,
+                "last_standard_data": json.dumps(response)
+            }
+        else:
+            return state
 
-    def how_to_improve_task(self, state:State):
+    async def how_to_improve_task(self, state:State):
         """
         在用户更新任务模板的过程中，对比模板是否填写完善
         :param state:
@@ -960,7 +996,7 @@ class DataAnalystService:
 
             chain = prompt | self.llm
 
-        response = chain.invoke({})
+        response = await chain.ainvoke({})
 
         return {
             "messages": [response],
@@ -1085,7 +1121,7 @@ class DataAnalystService:
            task_name：任务名称
            business_key：业务键
        """
-        query_data_task_dao.delete(id, business_key)
+        self.query_data_task_dao.delete(id, business_key)
 
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
@@ -1099,7 +1135,7 @@ class DataAnalystService:
         获取最频繁/最近执行过的任务名称
         :return:任务名称列表
         """
-        usually_execute_tasks = query_data_task_dao.get_usually_execute_top3_tasks(self.business_key)
+        usually_execute_tasks = self.query_data_task_dao.get_usually_execute_top3_tasks(self.business_key)
 
         names = set()
         not_in_ids = []
@@ -1107,14 +1143,14 @@ class DataAnalystService:
             names.add(t.name)
             not_in_ids.append(t.id)
 
-        frequently_execute_tasks = query_data_task_dao.get_frequently_execute_top3_tasks(self.business_key, not_in_ids)
+        frequently_execute_tasks = self.query_data_task_dao.get_frequently_execute_top3_tasks(self.business_key, not_in_ids)
 
         for t in frequently_execute_tasks:
             names.add(t.name)
 
         return names
 
-    def get_event_stream_function(self, input:str | None, session_id, stream_type:Literal["question", "resume"]):
+    def get_event_stream_function(self, input: str | None, session_id, stream_type: Literal["question", "resume"]):
         """
         获取流式方法，这个方法直接返回给前端使用
         :param input:
@@ -1122,52 +1158,44 @@ class DataAnalystService:
         :param stream_type; 是提问还是中断的回复
         :return: event_stream
         """
-        def event_stream():
 
-            # 为每个请求创建专用队列
-            data_queue = queue.Queue()
+        @stream_with_context
+        async def async_event_stream():
+            try:
+                # 根据不同的流类型获取对应的流
+                if stream_type == "question":
+                    stream = self.stream_question(input, session_id)
+                elif stream_type == "resume":
+                    stream = self.stream_resume(input, session_id)
+                else:
+                    stream = self.default(session_id)
 
-            def run_workflow():
-                try:
-                    if stream_type == "question":
-                        stream = self.stream_question(input, session_id)
-                    elif stream_type == "resume":
-                        stream = self.stream_resume(input, session_id)
-                    else:
-                        stream = self.default(session_id)
+                # 直接异步迭代处理流数据
+                async for stream_mode, detail in stream:
+                    # print(stream_mode, detail)
+                    if stream_mode == "messages":
+                        chunk, metadata = detail
+                        if metadata['langgraph_node'] in AI_CHAT_NODES:
+                            content = chunk.content
+                            yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
+                    elif stream_mode == "tasks":
+                        if "interrupts" in detail and len(detail["interrupts"]) > 0:
+                            yield f"data: {json.dumps({'interrupt': convert_2_interrupt(detail['interrupts'][0]).to_json()})}\n\n"
+                        elif detail["name"] in AI_MSG_NODES:
+                            content = get_tasks_mode_ai_msg_content(detail)
+                            if content is not None:
+                                yield f"data: {json.dumps({'msgId': detail['id'], 'token': content})}\n\n"
+                # print("ready to done")
+                yield "event: done\ndata: \n\n"
+
+            except Exception as e:
+                logging.error(f"Stream processing error: {e}")
+                yield f"event: error\ndata: {str(e)}\n\n"
+                yield "event: done\ndata: \n\n"
+
+        return async_event_stream
 
 
-                    for stream_mode, detail in stream:
-                        if stream_mode == "messages":
-                            chunk, metadata = detail
-                            if metadata['langgraph_node'] in AI_CHAT_NODES:
-                                # print("question", stream_mode, detail)
-                                content = chunk.content
-                                data_queue.put({"msgId":chunk.id, "token": content})
-                        elif stream_mode == "tasks":
-                            # print("question", stream_mode, detail)
-                            if "interrupts" in detail and len(detail["interrupts"]) > 0:
-                                data_queue.put({"interrupt": convert_2_interrupt(detail["interrupts"][0]).to_json()})
-                            elif detail["name"] in AI_MSG_NODES:
-                                content = get_tasks_mode_ai_msg_content(detail)
-                                if content is not None:
-                                    data_queue.put({"msgId":detail["id"], "token": content})
-                finally:
-                    data_queue.put(None)
-
-            # 启动 LangGraph 线程
-            threading.Thread(target=run_workflow).start()
-
-            # 从队列获取数据并发送
-            while True:
-                data = data_queue.get()
-                if data is None:
-                    yield "event: done\ndata: \n\n"
-                    break
-                # 格式化为 SSE 事件
-                yield f"data: {json.dumps(data)}\n\n"
-
-        return event_stream
 
     def get_state_properties(self, session_id, state_property_names):
         """
@@ -1200,6 +1228,62 @@ class DataAnalystService:
                     state_data[property] = state.values[property]
         return state_data
 
+    def find_task_by_id_or_name(self, task_id: int, task_name: str | None, business_key: str) -> QueryDataTaskEntity:
+        """
+        根据按优先级根据task_id,task_name查询db中的任务对象
+        :param task_id:
+        :param task_name:
+        :param business_key:业务键
+        :return: 任务对象
+        """
+        if task_id is not None:
+            entity = self.query_data_task_dao.find_by_id(task_id)
+        elif task_name is not None:
+            entity = self.query_data_task_dao.find_by_name(business_key, task_name)
+        else:
+            entity = None
+
+        return entity
+
+    @tool
+    def execute_once(self, id: int, business_key: str):
+        """
+              当执行任务时，把执行任务的次数+1
+
+              输入参数：
+              id：任务唯一id
+              business_key：业务键
+          """
+        self.query_data_task_dao.update_execute_times_once(id, business_key)
+
+    def get_agent_def(self, business_key) -> AgentDefEntity | None:
+        return self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.DATA_ANALYST)
+
+    def get_business_tool_list(self, agent_def: AgentDefEntity):
+        llm_tool_list: list[LLMToolEntity] = self.llm_tool_dao.get_llm_tools_by_agent_id(agent_def.id)
+
+        tools = []
+        # 处理http tool
+        for tool in llm_tool_list:
+            if tool.tool_type == LLMToolType.HTTP_TOOL:
+                t = create_llm_http_tool(tool)
+                tools.append(t)
+
+        # 处理mcp tool
+        mcp_tool_list = []
+        for tool in llm_tool_list:
+            if tool.tool_type == LLMToolType.MCP:
+                mcp_tool_list.append(tool)
+
+        mcp_tool_list = asyncio.run(create_mcp_client_tools(mcp_tool_list))
+        tools = tools + mcp_tool_list
+
+        return tools
+
+
+
+
+
 
 def get_tasks_mode_ai_msg_content(detail) -> str | None:
     """
@@ -1208,26 +1292,23 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     :return:
     """
     if "result" in detail:
-        for r in detail["result"]:
-            if r[0] == "messages":
-                msgs = r[1]
-                for m in msgs:
-                    if m[0] == "ai":
-                        return m[1]
+        result_dict = dict(detail["result"])
+        msgs = result_dict["messages"]
+        for m in msgs:
+            msg_dict = dict(m)
+            if "ai" in msg_dict:
+                return msg_dict["di"]
     return None
 
 
-def create_service(service_name, business_key, basic_system_template, business_tool_list) -> DataAnalystService:
+def create_service(service_name, business_key) -> DataAnalystService:
     """
-    创建并缓存工作流
-    # Todo 记忆使用分布式缓存存储后，工作流缓存可放置到分布式缓存中
+    创建并缓存service
     :param service_name: 工作流名称
     :param business_key: 业务键
-    :param basic_system_template:基础系统提示词
-    :param business_tool_list: 业务工具列表
-    :return: 工作流实例
+    :return: service
     """
-    data_analyst_service = DataAnalystService(service_name, business_key, basic_system_template, business_tool_list)
+    data_analyst_service = DataAnalystService(service_name, business_key)
     service_map[business_key] = data_analyst_service
     return data_analyst_service
 
@@ -1265,23 +1346,12 @@ def convert_2_interrupt(interrupt: Interrupt|dict) -> WorkflowInterrupt:
 
     return workflow_interrupt
 
+def get_real_url(tool_input: dict[str, Any], url: str) -> str:
+    real_url = url.format(**tool_input)
+    return real_url
 
-def find_task_by_id_or_name(task_id:int, task_name:str|None, business_key:str) -> QueryDataTaskEntity:
-    """
-    根据按优先级根据task_id,task_name查询db中的任务对象
-    :param task_id:
-    :param task_name:
-    :param business_key:业务键
-    :return: 任务对象
-    """
-    if task_id is not None:
-        entity = query_data_task_dao.find_by_id(task_id)
-    elif task_name is not None:
-        entity = query_data_task_dao.find_by_name(business_key, task_name)
-    else:
-        entity = None
 
-    return entity
+
 
 
 def add_human_in_the_loop(
@@ -1335,14 +1405,8 @@ def add_human_in_the_loop(
 
     return call_tool_with_interrupt
 
-
-@tool
-def execute_once(id:int, business_key:str):
-    """
-          当执行任务时，把执行任务的次数+1
-
-          输入参数：
-          id：任务唯一id
-          business_key：业务键
-      """
-    query_data_task_dao.update_execute_times_once(id, business_key)
+def get_or_create_data_analyst_service(business_key) -> DataAnalystService:
+    data_analyst_service = get_service(business_key)
+    if data_analyst_service is None:
+        data_analyst_service = create_service(business_key, business_key)
+    return data_analyst_service

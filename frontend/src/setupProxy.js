@@ -16,6 +16,17 @@ module.exports = function(app) {
         createProxyMiddleware({
             target: 'http://127.0.0.1:5000/agentApi',
             changeOrigin: true,
+            timeout: 600000, // 10分钟
+            proxyTimeout: 600000, // 代理请求超时时间
+        })
+    );
+
+    // 代理规则2: 将以 '/api1' 开头的请求代理到 http://localhost:9000
+    app.use(
+        '/admin',
+        createProxyMiddleware({
+            target: 'http://127.0.0.1:5000/admin',
+            changeOrigin: true,
         })
     );
 };

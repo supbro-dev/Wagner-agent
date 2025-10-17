@@ -29,8 +29,9 @@ from memori.core.providers import ProviderConfig
 from pydantic import BaseModel, Field
 from werkzeug.utils import secure_filename
 
+import container
 from config import Config
-from dao.agent_def_dao import find_by_business_key_and_type
+from dao.agent_def_dao import AgentDefDAO
 from entity.agent_def_entity import AgentDefType
 from service.agent.model.assistant_state import AssistantState
 from service.agent.model.state import InputState
@@ -97,6 +98,7 @@ class AssistantService:
     def __init__(self, workflow_name, business_key: str, basic_system_template:str):
         self.business_key = business_key
         self.basic_system_template = basic_system_template
+
 
         # 初始化大模型
         os.environ["LANGSMITH_TRACING"] = "true"
@@ -487,7 +489,8 @@ def get_or_create_assistant_service(business_key) -> AssistantService:
 
 
 def create_assistant_service(business_key) -> AssistantService:
-    agent_def = find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
+    agent_def_dao = container.dao_container.agent_def_dao()
+    agent_def = agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.ASSISTANT)
 
     if agent_def is None:
         raise Exception("未找到对应的agent定义")

@@ -1,11 +1,26 @@
 import {Content} from "antd/es/layout/layout";
-import {Breadcrumb, Button, Flex, Layout, message, Modal, Progress, Splitter, Tree, Typography, Upload} from "antd";
-import {Bubble, Prompts, Sender} from "@ant-design/x";
-import {RocketOutlined, UploadOutlined, UserOutlined} from "@ant-design/icons";
+import {
+    Breadcrumb,
+    Button, Card,
+    Flex,
+    Layout,
+    message,
+    Modal,
+    Progress,
+    Splitter,
+    Table,
+    Tree,
+    Typography,
+    Upload
+} from "antd";
+import {Bubble, Prompts, Sender, ThoughtChain} from "@ant-design/x";
+import {MoreOutlined, RocketOutlined, UploadOutlined, UserOutlined} from "@ant-design/icons";
 import {useEffect, useState} from "react";
 import markdownit from "markdown-it";
 import {useLocation} from "react-router-dom";
 import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
+import {Line} from "@ant-design/plots";
+const { Paragraph, Text } = Typography;
 
 const aiAvatar = {
     color: '#f56a00',
@@ -25,6 +40,17 @@ const promptList = [{
     disabled: false,
 }]
 
+
+
+
+const items = [
+    {
+        key: 'item-1',
+        title: 'Click me to expand the content',
+        content: "dkdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        status: 'success',
+    }
+];
 
 const Assistant = () => {
     const [loading, setLoading] = useState(false);
@@ -49,6 +75,16 @@ const Assistant = () => {
     // 使用 URLSearchParams 解析查询字符串
     const queryParams = new URLSearchParams(location.search);
     const businessKey = queryParams.get('businessKey');
+
+    const [showThoughtChain, setShowThoughtChain] = useState(false);
+    const [taskSize, setTaskSize] = useState(0)
+    const [taskNames, setTaskNames] = useState('');
+    const [ragDocSize, setRagDocSize] = useState(0)
+    const [ragDocNameList, setRagDocNameList] = useState([]);
+    const [memorySize, setMemorySize] = useState(0);
+    const [memoryContent, setMemoryContent] = useState("")
+    const [reasoningContent, setReasoningContent] = useState('');
+    const [expandedKeys, setExpandedKeys] = useState(['reasoning']);
 
 
 
@@ -112,6 +148,7 @@ const Assistant = () => {
         setLoading(true);
         setBubbleLoading(true)
         setShowNewAiBubble(true)
+        setShowThoughtChain(false)
 
         // 更新AI对话
         if (response) {
@@ -135,12 +172,31 @@ const Assistant = () => {
                     if (!firstGetEvent.current) {
                         firstGetEvent.current = true
                         setBubbleLoading(false)
+                        setShowThoughtChain(true)
                     }
                     try {
                         const data = JSON.parse(event.data);
                         if (data.token) {
                             setResponse(prev => prev + data.token); // 增量更新
                         }
+                        // 设置推理内容
+                        if (data.reasoningContent) {
+                            setReasoningContent(prev => prev + data.reasoningContent) // 增量更新
+                        }
+                        // 设置查询任务总数
+                        if (data.taskSize) {
+                            setTaskSize(data.taskSize)
+                            setTaskNames(data.taskNames)
+                        }
+                        // 设置检索到的文档数
+                        if (data.ragDocSize) {
+                            setRagDocSize(data.ragDocSize)
+                        }
+                        // 设置检索到的文档名称
+                        if (data.ragDocNameList) {
+                            setRagDocNameList(data.ragDocNameList)
+                        }
+
                     } catch (e) {
                         console.error('解析错误', e);
                     }
@@ -222,6 +278,33 @@ const Assistant = () => {
     }, []);
 
     const agentContentBubble = []
+    for (const i in conversationList) {
+        const conversation = conversationList[i]
+        if (conversation.type === 'ai') {
+            const bubble = (
+                <Bubble content={conversation.content} messageRender={renderMarkdown}
+                        avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement}
+                        header={"AI助理"}
+                />
+            )
+            agentContentBubble.push(bubble)
+        } else {
+            const bubble = (
+                <Bubble content={conversation.content}
+                        avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement} />
+            )
+
+            agentContentBubble.push(bubble)
+        }
+    }
+
+
+    const collapsible = {
+        expandedKeys,
+        onExpand: keys => {
+            setExpandedKeys(keys);
+        },
+    };
 
     return (
         <Layout >
@@ -240,6 +323,34 @@ const Assistant = () => {
                 </Breadcrumb>
                 <Flex vertical gap="middle">
                     {agentContentBubble}
+                    <Card style={{ width: '55%' }} hidden={!showThoughtChain}>
+                        <ThoughtChain items={ [
+                            {
+                                key: 'tasks',
+                                title: `已有${taskSize}个数据查询任务`,
+                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{`已有数据查询任务:${taskNames}`}</div>,
+                                status: 'success',
+                            },
+                            {
+                                key: 'ragDocs',
+                                title: `检索到${ragDocSize}个文档`,
+                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ragDocNameList}</div>,
+                                status: 'success',
+                            },
+                            {
+                                key: 'memories',
+                                title: `检索到${memorySize}个相关记忆`,
+                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{memoryContent}</div>,
+                                status: 'success',
+                            },
+                            {
+                                key: 'reasoning',
+                                title: '深度思考',
+                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{reasoningContent}</div>,
+                                status: 'success',
+                            }
+                        ]} collapsible={collapsible} />
+                    </Card>
                     <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
                             avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                             header={"AI数据员"}

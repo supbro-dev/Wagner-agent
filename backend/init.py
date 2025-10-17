@@ -1,19 +1,16 @@
-from flask import Flask
-from sqlalchemy import create_engine
+from quart import Quart
 
-from config import Config
-
-# 创建引擎（连接数据库）
-engine = create_engine(Config.MYSQL_DATABASE, echo=True)
 
 def create_app(Config=None):
     """应用工厂函数"""
-    app = Flask(__name__)
+    app = Quart(__name__)
     app.config.from_object(Config)
+    # 必须设置，推理模型推理过程可能很长，默认1分钟超时
+    app.config['RESPONSE_TIMEOUT'] = 600
 
-    # 注册蓝图
-    from web.work_group_agent_controller import agentApi
-    app.register_blueprint(agentApi, url_prefix='/agentApi/v1/agent')
+    # # 注册蓝图
+    from web.data_analyst_controller import dataAnalystApi
+    app.register_blueprint(dataAnalystApi, url_prefix='/agentApi/v1/dataAnalyst/')
 
     from web.admin_controller import adminApi
     app.register_blueprint(adminApi, url_prefix='/admin/')

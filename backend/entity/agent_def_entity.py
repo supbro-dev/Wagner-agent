@@ -6,6 +6,7 @@ Base = declarative_base()
 
 class AgentDefType:
     ASSISTANT = "assistant"
+    DATA_ANALYST = "dataAnalyst"
 
 class AgentDefEntity(Base):
     __tablename__ = 'agent_def'
@@ -16,4 +17,4 @@ class AgentDefEntity(Base):
     business_key = Column(String(256), nullable=False, comment='业务键')
     name = Column(String(256), nullable=False, comment='名称')
     system_prompt = Column(Text, nullable=False, comment='系统提示词')
-    type = Column(String(32), nullable=False, comment='类型(数据员/助理)')
+    agent_type = Column(String(32), nullable=False, comment='类型(数据员/助理)')

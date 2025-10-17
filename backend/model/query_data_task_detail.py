@@ -22,6 +22,13 @@ class QueryDataTaskDetail(BaseModel):
         获取到结果之后的数据加工逻辑:{self.data_operation}\n        
         """
 
+    def to_desc_for_llm(self):
+        return f"""
+                任务的目标:{self.target}\n
+                查询参数:{self.query_param}\n
+                获取到结果之后的数据加工逻辑:{self.data_operation}\n        
+                """
+
     def to_dict(self):
         return self.model_dump(by_alias=True)
 

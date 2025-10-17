@@ -1,5 +1,7 @@
 from datetime import datetime
 
+def get_current_date():
+    return datetime.now().strftime("%Y-%m-%d")
 
 def parse_datetime_iso(str):
     return datetime.fromisoformat(str)
