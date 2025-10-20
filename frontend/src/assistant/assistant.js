@@ -6,15 +6,21 @@ import {
     Layout,
     message,
     Modal,
-    Progress,
+    Progress, Space,
     Splitter,
-    Table,
+    Table, Tooltip,
     Tree,
     Typography,
     Upload
 } from "antd";
 import {Bubble, Prompts, Sender, ThoughtChain} from "@ant-design/x";
-import {MoreOutlined, RocketOutlined, UploadOutlined, UserOutlined} from "@ant-design/icons";
+import {
+    MoreOutlined,
+    SignalFilled, SignatureFilled,
+    SyncOutlined,
+    UploadOutlined,
+    UserOutlined
+} from "@ant-design/icons";
 import {useEffect, useState} from "react";
 import markdownit from "markdown-it";
 import {useLocation} from "react-router-dom";
@@ -83,6 +89,7 @@ const Assistant = () => {
     const [ragDocNameList, setRagDocNameList] = useState([]);
     const [memorySize, setMemorySize] = useState(0);
     const [memoryContent, setMemoryContent] = useState("")
+    const [savedMemoryContent, setSavedMemoryContent] = useState("")
     const [reasoningContent, setReasoningContent] = useState('');
     const [expandedKeys, setExpandedKeys] = useState(['reasoning']);
 
@@ -165,6 +172,7 @@ const Assistant = () => {
         }
 
         const firstGetEvent = {current:false}
+        const currentMsgId = {current:''}
 
         doStream(`/agentApi/v1/assistant/askAssistant?question=${encodeURIComponent(question)}&sessionId=${sessionId}&businessKey=${businessKey}`,
             (event) => {
@@ -178,6 +186,9 @@ const Assistant = () => {
                         const data = JSON.parse(event.data);
                         if (data.token) {
                             setResponse(prev => prev + data.token); // 增量更新
+                        }
+                        if (currentMsgId.current === "" && data.msgId) {
+                            currentMsgId.current = data.msgId
                         }
                         // 设置推理内容
                         if (data.reasoningContent) {
@@ -195,6 +206,17 @@ const Assistant = () => {
                         // 设置检索到的文档名称
                         if (data.ragDocNameList) {
                             setRagDocNameList(data.ragDocNameList)
+                        }
+                        if (data.memorySize) {
+                            setMemorySize(data.memorySize)
+                        }
+                        if (data.memoryContent){
+                            setMemoryContent(data.memoryContent)
+                        }
+
+                        // 设置生成记忆内容
+                        if (data.savedMemoryContent) {
+                            setSavedMemoryContent(data.savedMemoryContent)
                         }
 
                     } catch (e) {
@@ -354,6 +376,13 @@ const Assistant = () => {
                     <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
                             avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                             header={"AI数据员"}
+                            footer={(messageContext) => (
+                                <Space >
+                                    <Tooltip placement="bottomRight" title={savedMemoryContent}>
+                                        <Button color={savedMemoryContent === "" ? "default":"gold"} variant="text" size="small" icon={<SignatureFilled />} />
+                                    </Tooltip>
+                                </Space>
+                            )}
                     />
 
                     {contextHolder}
