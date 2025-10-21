@@ -2,38 +2,25 @@
 import json
 import logging
 import os
-import queue
-import tempfile
-import threading
-from datetime import datetime
-from enum import StrEnum
-from typing import Optional, Type, cast, Literal, Annotated, Callable
+from typing import Optional, cast, Literal
 
 from dotenv import load_dotenv
 from langchain.retrievers import MultiQueryRetriever
-from langchain_community.document_loaders import UnstructuredMarkdownLoader
-from langchain_core.callbacks import CallbackManagerForToolRun
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, BaseMessage
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, InjectedToolCallId, tool as create_tool, tool
+from langchain_core.tools import tool
 from langchain_deepseek import ChatDeepSeek
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_redis import RedisVectorStore, RedisConfig
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.redis import RedisSaver
 from langgraph.constants import START, END
-from langgraph.graph import MessagesState
 from langgraph.graph.state import CompiledStateGraph, StateGraph
-from langgraph.prebuilt import ToolNode, InjectedState
-from langgraph.types import Command
-from mem0 import MemoryClient, Memory
-from memori import Memori, create_memory_tool, MemoryTool, ConfigManager
-from memori.core.providers import ProviderConfig
-from pydantic import BaseModel, Field
+from langgraph.prebuilt import ToolNode
+from mem0 import Memory
 from quart import stream_with_context
-from werkzeug.utils import secure_filename
 
 from config import Config
 from container import dao_container
@@ -41,17 +28,17 @@ from dao.agent_def_dao import AgentDefDAO
 from dao.query_data_task_dao import QueryDataTaskDAO
 from entity.agent_def_entity import AgentDefType
 from model.query_data_task_detail import QueryDataTaskDetail
-from service.agent.data_analyst_service import get_service, get_or_create_data_analyst_service
+from service.agent.data_analyst_service import get_or_create_data_analyst_service
+from service.agent.model.assistant_output_schema import DEFAULT, QUERY_DATA, IntentSchema
 from service.agent.model.assistant_state import AssistantState
 from service.agent.model.state import InputState
 from service.agent.prompt import prompts
 from util import datetime_util
 from util.config_util import read_private_config
 
-
 service_map = {}
 
-AI_CHAT_NODES = ["chat", "reason"]
+AI_CHAT_NODES = ["chat", "reason", "default"]
 
 
 class AssistantService:
@@ -148,22 +135,40 @@ class AssistantService:
                             else:
                                 yield f"data: {json.dumps({'msgId': chunk.id, 'token': content})}\n\n"
                     elif stream_mode == "tasks":
-                        if detail["name"] == self.get_all_tasks.__name__ and "result" in detail:
+                        if detail["name"] == "get_all_tasks" and "result" in detail:
+                            # 获取任务内容
                             for tuple in detail["result"]:
                                 result_dict = {tuple[0]:tuple[1]}
                                 if "task_names" in result_dict:
                                     task_names = result_dict["task_names"]
                                     yield f"data: {json.dumps({'taskSize': len(task_names), 'taskNames':",".join(task_names)})}\n\n"
-                        elif detail["name"] == self.get_doc_content_from_vector.__name__ and "result" in detail:
+                        elif detail["name"] == "get_doc_content_from_vector" and "result" in detail:
+                            # 获取rag内容
                             tuple = detail["result"][0]
                             result_dict = {tuple[0]: tuple[1]}
                             rag_docs = result_dict["rag_docs"]
                             yield f"data: {json.dumps({'ragDocSize': len(rag_docs)})}\n\n"
-                        elif detail["name"] == self.get_memories.__name__ and "result" in detail:
-                            tuple = detail["result"][0]
-                            result_dict = {tuple[0]: tuple[1]}
-                            memories = result_dict["memories"]
-                            yield f"data: {json.dumps({'memorySize': len(memories)})}\n\n"
+                        elif detail["name"] == "get_memories" and "result" in detail:
+                            # 获取查询到的记忆内容
+                            for tuple in detail["result"]:
+                                result_dict = {tuple[0]: tuple[1]}
+                                if "memories" in result_dict:
+                                    memories = result_dict["memories"]
+                                    yield f"data: {json.dumps({'memorySize': len(memories)})}\n\n"
+                                if "memory_content" in result_dict:
+                                    memory_content = result_dict["memory_content"]
+                                    yield f"data: {json.dumps({'memoryContent': memory_content})}\n\n"
+                        elif (detail["name"] == "default" or detail["name"] == "chat") and "result" in detail:
+                            # 获取生成的记忆内容
+                            for tuple in detail["result"]:
+                                result_dict = {tuple[0]: tuple[1]}
+                                if "saved_memory_content" in result_dict:
+                                    saved_memory_content = result_dict["saved_memory_content"]
+                                    if saved_memory_content != "":
+                                        yield f"data: {json.dumps({'savedMemoryContent': saved_memory_content})}\n\n"
+                                if "msg_id_saved_memories" in result_dict:
+                                    msg_id_saved_memories = result_dict["msg_id_saved_memories"]
+                                    yield f"data: {json.dumps({'msgIdSavedMemories': msg_id_saved_memories})}\n\n"
                 yield "event: done\ndata: \n\n"
 
             except Exception as e:
@@ -193,7 +198,7 @@ class AssistantService:
 
         return stream
 
-    def get_all_tasks(self, state: AssistantState):
+    def _get_all_tasks(self, state: AssistantState):
         """
         获取所有的任务
         :return:state
@@ -202,17 +207,20 @@ class AssistantService:
 
         task_details = []
         task_names = []
+        task_content = "你能使用的所有任务信息如下:\n"
         for task in tasks:
             task_names.append(task.name)
             task_detail = QueryDataTaskDetail.model_validate(json.loads(task.task_detail))
+            task_content += f"任务名：{task.name}\n {task_detail.to_desc_for_llm()}\n"
             task_details.append(task_detail)
 
         return {
             "task_details": task_details,
             "task_names": task_names,
+            "task_content": task_content,
         }
 
-    def get_doc_content_from_vector(self, state:AssistantState):
+    def _get_doc_content_from_vector(self, state:AssistantState):
         human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
 
         search_kwargs = {
@@ -229,18 +237,161 @@ class AssistantService:
             "rag_docs": docs,
         }
 
-    def get_memories(self, state: AssistantState):
-        human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
+    def _get_memories(self, state: AssistantState):
+        try:
+            human_msg: HumanMessage = cast(HumanMessage, state.messages[-1])
 
-        memories = self.memory.search(human_msg.content, user_id=self.business_key)
-        memory_list = memories['results']
+            # mem0 0.0.118版本有bug，threshold不能直接传，过滤时类型不匹配
+            memories = self.memory.search(human_msg.content,
+                                          user_id=self.business_key,
+                                          limit=Config.ASSISTANT_MEMORY_TOP_K)
+            # 过滤掉低于阈值的记忆
+            filtered_memories = [
+                memory for memory in memories['results']
+                if float(memory.get('score', 0)) <= Config.ASSISTANT_MEMORY_SCORE_THRESHOLD
+            ]
+
+            memory_list = filtered_memories
+            memory_content = self.get_memory_content(filtered_memories)
+
+            return {
+                "memories": memory_list,
+                "memory_content": memory_content,
+            }
+        except Exception as e:
+            logging.error(f"Get memories error: {e}")
+            return {
+                "memories": [],
+            }
+
+    async def _intent_classifier(self, state: AssistantState):
+        """
+        意图判断节点
+        :param state:
+        :return: state
+        """
+
+        # 如果没有任何消息，直接返回DEFAULT
+        if len(state.messages) == 0:
+            state.intent_type = DEFAULT
+            return state
+
+        # 展示所有任务信息
+        intent_prompt = ChatPromptTemplate.from_messages([
+            # 系统提示词
+            ("system", f"""{self.basic_system_template}
+            
+            你的职责是根据用户的对话，以及以下信息：
+            
+            1.用户对话相关的知识库内容
+            2.用户对话相关的记忆
+            3.可以使用的数据查询任务
+            
+            结合用户最近的对话内容，分析用户的意图，如果用户的提问需要调用任务进行查询才能回答，则意图为“查询数据”，否则意图为“默认”
+            
+            {state.task_content}
+            
+            {state.memory_content}
+
+            共有以下几种意图
+            1. {QUERY_DATA} - 查询数据  
+            2. {DEFAULT} - 默认
+
+            按JSON格式输出分类结果，无关话题一律归类为默认。
+            你还需要根据历史对话记录辨认用户是否是在进行数据查询（例如调成查询参数或查询步骤），若果"是"，则意图为查询数据，否则为默认。
+
+            **重要说明**: 以下示例仅用于展示意图分类逻辑，不是实际对话历史，不要直接解析为意图。
+                       """),
+            # 明确标识示例区
+            MessagesPlaceholder("examples", optional=True),
+            # 包含所有历史对话
+            *state.messages
+        ])
+
+        examples = [
+            # 使用few-shot示例（强调AI必须返回JsonOutputParser的格式，不加AI会尝试返回自然语言的KV）：
+            ("human", "你好，我是皮特"),
+            ("ai", "{\"intent_type\": \"" + DEFAULT + "}"),
+            ("human", "请检查员工考勤"),
+            ("ai", "{\"intent_type\": \"" + QUERY_DATA + "}"),
+        ]
+
+        parser = JsonOutputParser(pydantic_object=IntentSchema)
+        chain = intent_prompt | self.llm | parser
+
+        result = await chain.ainvoke({
+            "examples": examples,
+        })
 
         return {
-            "memories": memory_list,
+            "intent_type" :result["intent_type"],
         }
 
+    async def _default(self, state:AssistantState):
+        """
+        使用llm进行推理（只做rag和记忆读取）
+        :param state:
+        :return:state
+        """
+        # 1.basic提示词
+        basic_system_prompt = self.basic_system_template \
+                              + f""""
+                        当前日期:{datetime_util.get_current_date()}             
+        """
 
-    async def reason(self, state: AssistantState):
+        # 2.知识库提示词
+        knowledge_prompt_context = "\n查询知识库搜索到相关信息如下:\n"
+        if len(state.rag_docs) > 0:
+            knowledge_prompt_context += state.rag_docs
+        else:
+            knowledge_prompt_context += "无"
+
+        # 3.记忆提示词
+        memory_content = state.memory_content
+
+        all_messages = state.messages
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content="\n".join(
+                [basic_system_prompt, knowledge_prompt_context, memory_content])),
+            *all_messages,
+        ])
+        chain = prompt | self.reasoner_llm
+        config = RunnableConfig(
+            configurable={"timeout": 600000}
+        )
+        response = await chain.ainvoke({},
+                                       config=config,
+                                       )
+
+        saved_memories = []
+        saved_memory_content = ""
+        msg_id_saved_memories = ""
+        if response.tool_calls is None or len(response.tool_calls) == 0:
+            # 生成事实记忆
+            saved_memories, saved_memory_content = self._add_fact_memory(all_messages, response)
+            if len(saved_memories) > 0:
+                msg_id_saved_memories = response.id
+
+        return {
+            "messages": [response.content],
+            "saved_memories": saved_memories,
+            "saved_memory_content": saved_memory_content,
+            "msg_id_saved_memories": msg_id_saved_memories,
+        }
+
+    def get_memory_content(self, memories:list[dict]):
+        memory_content = "从历史对话中获取到的相关信息如下:\n"
+        if len(memories) > 0:
+            for memory in memories:
+                formatted_time = datetime_util.format_iso_2_datetime_at_zone(memory["created_at"])
+                memory_content += f"{memory["memory"]}(记忆产生于{formatted_time})\n"
+        else:
+            memory_content += "无"
+
+        return memory_content
+
+
+    async def _reason(self, state: AssistantState):
         """
         使用llm进行推理
         :param state:
@@ -264,23 +415,14 @@ class AssistantService:
 
 
         # 4.记忆提示词
-        memory_context = "\n从历史对话中获取到的相关信息如下:\n"
-        if len(state.memories) > 0:
-            for memory in state.memories:
-                memory_context += f"{memory.content}\n"
-        else:
-            memory_context += "无"
+        memory_content = state.memory_content
 
         # 5.所有任务信息
-        task_context = "\n你能使用的所有任务信息如下:\n"
-        if len(state.task_names) > 0:
-            task_context += "\n".join([f"任务名：{name}\n {detail.to_desc_for_llm()}\n" for name, detail in zip(state.task_names, state.task_details)]) + "\n"
-        else:
-            task_context += "无"
+        task_context = state.task_content
 
         all_messages = state.messages
         prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content="\n".join([basic_system_prompt, reason_prompt_context, knowledge_prompt_context, memory_context, task_context])),
+            SystemMessage(content="\n".join([basic_system_prompt, reason_prompt_context, knowledge_prompt_context, memory_content, task_context])),
             *all_messages,
         ])
         chain = prompt | self.reasoner_llm
@@ -295,7 +437,7 @@ class AssistantService:
             "reasoning_context": response.content,
         }
 
-    def find_last_human_message(self, messages) -> (int, HumanMessage):
+    def _find_last_human_message(self, messages) -> (int, HumanMessage):
         """
         从后往前查找最后一条HumanMessage
         """
@@ -304,8 +446,46 @@ class AssistantService:
                 return i, messages[i]
         return -1, None
 
+    def _add_fact_memory(self, messages, response):
+        _, human_msg = self._find_last_human_message(messages)
 
-    async def chat(self, state: AssistantState):
+        response_content = response.content
+        if response_content != "":
+            # Store the interaction in Mem0
+            try:
+                interaction = [
+                    {
+                        "role": "user",
+                        "content": human_msg.content,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": response.content
+                    }
+                ]
+                result = self.memory.add(interaction, user_id=self.business_key)
+                saved_memories = result.get('results', [])
+
+                logging.info(f"Memory saved: {len(saved_memories)} memories added")
+
+                saved_memory_content = ""
+                for saved_memory in saved_memories:
+                    event_type = saved_memory["event"]
+                    content = ""
+                    if event_type == "ADD":
+                        content = "新增记忆:"
+                    elif event_type == "UPDATE":
+                        content = "更新记忆:"
+                    elif event_type == "DELETE":
+                        content = "删除记忆:"
+                    content += saved_memory["memory"] + "\n"
+                    saved_memory_content += content
+                return saved_memories, saved_memory_content
+            except Exception as e:
+                logging.error(f"Error saving memory: {e}")
+                return [], ""
+
+    async def _chat(self, state: AssistantState):
         """
         使用llm进行对话(并查找过往记忆)
         :param state:
@@ -346,34 +526,31 @@ class AssistantService:
             chain = prompt | self.llm.bind_tools(self.data_analyst_tool)
         response = await chain.ainvoke({})
 
+        saved_memories = []
+        saved_memory_content = ""
+        msg_id_saved_memories = ""
         if response.tool_calls is None or len(response.tool_calls) == 0:
-            _, human_msg = self.find_last_human_message(all_messages)
-
-            response_content = response.content
-            if response_content != "" :
-                # Store the interaction in Mem0
-                try:
-                    interaction = [
-                        {
-                            "role": "user",
-                            "content": human_msg.content,
-                        },
-                        {
-                            "role": "assistant",
-                            "content": response.content
-                        }
-                    ]
-                    result = self.memory.add(interaction, user_id=self.business_key)
-
-                    print(f"Memory saved: {len(result.get('results', []))} memories added")
-                except Exception as e:
-                    print(f"Error saving memory: {e}")
+            # 生成事实记忆
+            saved_memories, saved_memory_content = self._add_fact_memory(all_messages, response)
+            if len(saved_memories) > 0:
+                msg_id_saved_memories = response.id
 
         #todo 生成长期记忆
 
         return {
             "messages": [response],
+            "saved_memories": saved_memories,
+            "saved_memory_content": saved_memory_content,
+            "msg_id_saved_memories": msg_id_saved_memories,
         }
+
+
+    # conditional edge
+    def need_reason(self, state: AssistantState) -> Literal["reason", "default"]:
+        if state.intent_type == QUERY_DATA:
+            return "reason"
+        else:
+            return "default"
 
     def need_invoke_tool(self, state: AssistantState) -> Literal["data_analyst_tool", END]:
         last_message = state.messages[-1]
@@ -468,23 +645,27 @@ class AssistantService:
 
     def create_graph(self, graph_name):
         builder = StateGraph(AssistantState, input_schema=AssistantState)
-        builder.add_node(self.get_all_tasks)
-        builder.add_node(self.get_doc_content_from_vector)
-        builder.add_node(self.get_memories)
-        builder.add_node(self.reason)
-        builder.add_node(self.chat)
+        builder.add_node("intent_classifier", self._intent_classifier)
+        builder.add_node("get_all_tasks", self._get_all_tasks)
+        builder.add_node("get_doc_content_from_vector", self._get_doc_content_from_vector)
+        builder.add_node("get_memories", self._get_memories)
+        builder.add_node("reason", self._reason)
+        builder.add_node("default", self._default)
+        builder.add_node("chat", self._chat)
         builder.add_node("data_analyst_tool", ToolNode(self.data_analyst_tool))
 
-        builder.add_edge(START, self.get_all_tasks.__name__)
-        builder.add_edge(self.get_all_tasks.__name__, self.get_doc_content_from_vector.__name__)
-        builder.add_edge(self.get_doc_content_from_vector.__name__, self.get_memories.__name__)
-        builder.add_edge(self.get_memories.__name__, self.reason.__name__)
-        builder.add_edge(self.reason.__name__, self.chat.__name__)
-        builder.add_conditional_edges(self.chat.__name__, self.need_invoke_tool)
-        builder.add_edge("data_analyst_tool", self.chat.__name__)
+        builder.add_edge(START, "get_all_tasks")
+        builder.add_edge("get_all_tasks", "get_doc_content_from_vector")
+        builder.add_edge("get_doc_content_from_vector", "get_memories")
+        builder.add_edge("get_memories", "intent_classifier")
+        builder.add_conditional_edges("intent_classifier", self.need_reason)
+        builder.add_edge("reason", "chat")
+        builder.add_edge("default", END)
+        builder.add_conditional_edges("chat", self.need_invoke_tool)
+        builder.add_edge("data_analyst_tool", "chat")
 
         # 记忆功能
-        if Config.MEMORY_USE == "local":
+        if Config.MESSAGE_MEMORY_USE == "local":
             memory = InMemorySaver()
         else:
             memory = RedisSaver(Config.REDIS_URL)

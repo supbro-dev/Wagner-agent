@@ -49,7 +49,7 @@ from entity.query_data_task_entity import QueryDataTaskEntity
 from model.llm_http_tool_content import LLMHTTPToolContent
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.model.interrupt import WorkflowInterrupt
-from service.agent.model.json_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
+from service.agent.model.data_analyst_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
 from service.agent.model.state import State, InputState
@@ -238,7 +238,7 @@ class DataAnalystService:
         builder.add_edge(GraphNode.DEFAULT_NODE, END)
 
         # 记忆功能
-        if Config.MEMORY_USE == "local":
+        if Config.MESSAGE_MEMORY_USE == "local":
             memory = InMemorySaver()
         else:
             memory = RedisSaver(Config.REDIS_URL)

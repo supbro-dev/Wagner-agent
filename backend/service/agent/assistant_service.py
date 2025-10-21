@@ -350,7 +350,7 @@ class AssistantService:
         builder.add_edge(AssistantGraphNode.CHAT_AFTER_VECTOR_AND_MEMORI, END)
 
         # 记忆功能
-        if Config.MEMORY_USE == "local":
+        if Config.MESSAGE_MEMORY_USE == "local":
             memory = InMemorySaver()
         else:
             memory = RedisSaver(Config.REDIS_URL)
