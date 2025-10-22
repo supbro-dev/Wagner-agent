@@ -724,25 +724,56 @@ class AssistantService:
     def __allowed_file(self, filename):
         return '.' in filename and filename.rsplit('.', 1)[1].lower() in self.ALLOWED_EXTENSIONS
 
-    async def upload_file(self, file):
-        # 获取文件内容
-        if file and self.__allowed_file(file.filename):
-            # 创建临时文件
-            with tempfile.NamedTemporaryFile(delete=True, suffix='.md') as temp_file:
-                temp_path = temp_file.name  # 获取临时文件路径
+    async def upload_file_list(self, file_list:list):
+        # 检查文件名是否重复
+        filenames = [file.filename for file in file_list]
+        if len(filenames) != len(set(filenames)):
+            raise Exception("上传的文件中有重名文件")
 
-                # 方法1：使用 Quart 的异步保存（推荐）
-                await file.save(temp_path)
+        # 检查知识库中是否有同名文件
+        exsited_files = self.__rag_file_dao.find_by_business_key(self.__business_key)
+        existed_filenames = [file.file_name for file in exsited_files]
+        for filename in filenames:
+            if filename in existed_filenames:
+                raise Exception(f"文件 {filename} 在知识库中已存在")
 
-                logging.info(f"文件保存成功, {temp_path}")
+        for file in file_list:
+            # 获取文件内容
+            if file and self.__allowed_file(file.filename):
+                # 创建临时文件
+                with tempfile.NamedTemporaryFile(delete=True, suffix='.md') as temp_file:
+                    temp_path = temp_file.name  # 获取临时文件路径
 
-                # 处理Markdown文件
-                ids = self.__process_single_file(temp_path, file.filename)
+                    # 方法1：使用 Quart 的异步保存（推荐）
+                    await file.save(temp_path)
 
-                self.__rag_file_dao.add_rag_file(
-                    RagFileEntity(file_name=file.filename, content=str(ids), business_key=self.__business_key))
-        else:
-            raise Exception("Invalid file")
+                    logging.info(f"文件保存成功, {temp_path}")
+
+                    # 处理Markdown文件
+                    ids = self.__process_single_file(temp_path, file.filename)
+
+                    self.__rag_file_dao.add_rag_file(
+                        RagFileEntity(file_name=file.filename, content=str(ids), business_key=self.__business_key))
+            else:
+                raise Exception("Invalid file")
+
+    def show_all_files(self):
+        rag_file_list = self.__rag_file_dao.find_by_business_key(self.__business_key)
+        file_id2_name_list = [(rag_file.id, rag_file.file_name) for rag_file in rag_file_list]
+
+        return file_id2_name_list
+
+    def delete_file(self, file_id):
+        # 数据库删除
+        rag_file = self.__rag_file_dao.find_by_id(file_id)
+        result = self.__rag_file_dao.delete_by_id(file_id)
+        # 向量存储删除
+        ids_list:list[str] = json.loads(rag_file.content.replace("'", '"'))
+        # 遍历ids_list，去除key_prefix前缀
+        prefix = self.__vector_store.key_prefix + ":"
+        cleaned_ids = [id_str.replace(prefix, "") for id_str in ids_list]
+        self.__vector_store.delete(cleaned_ids)
+        return result
 
 
     def __add_metadata(self, doc, filename, time_str):
@@ -840,6 +871,8 @@ class AssistantService:
                                    memory_type=MemoryType.PROCEDURAL.value,
                                    prompt=ASSISTANT_EXTRACT_QUERYING_DATA_PROMPT)
         return result
+
+
 
 
 @tool

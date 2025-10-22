@@ -60,3 +60,40 @@ class RagFileDAO(BaseDAO):
             return rag_file_entity
 
         return self.execute_in_session(query)
+
+    def find_by_id(self, file_id):
+        """
+        根据ID查询RagFile记录
+
+        Args:
+            file_id (int): 文件ID
+
+        Returns:
+            RagFileEntity: 查询到的RagFileEntity对象，未找到则返回None
+        """
+        def query(session):
+            query = select(RagFileEntity).where(RagFileEntity.id == file_id)
+            result = session.execute(query).scalar_one_or_none()
+            return result
+        return self.execute_in_session(query)
+
+    def delete_by_id(self, file_id):
+        """
+        根据ID删除RagFile记录
+
+        Args:
+            file_id (int): 文件ID
+
+        Returns:
+            int: 删除的记录数
+        """
+        def query(session):
+            query = select(RagFileEntity).where(RagFileEntity.id == file_id)
+            result = session.execute(query).scalar_one_or_none()
+            if result:
+                session.delete(result)
+                session.flush()
+                return 1
+            return 0
+        return self.execute_in_session(query)
+

@@ -65,7 +65,7 @@ async def add_procedural_memory():
     return jsonify(success(result).to_dict())
 
 
-@assistantApi.route('/uploadFile', methods=['POST'])
+@assistantApi.route('/uploadMultiDocs', methods=['POST'])
 async def upload_file():
     """
     处理文件上传的POST请求方法
@@ -73,22 +73,57 @@ async def upload_file():
     """
     # 获取上传的文件
     files = await request.files
-    file = files.get('file')  # 'file' 是前端表单中的字段名
-
-    # 检查文件名是否为空
-    if file.filename == '':
-        result = ResultVo(success=False, result="未找到文件")
-        return jsonify(success(result).to_dict())
+    file_list = []
+    for i in range(10):
+        file = files.get(f'file{i}')
+        if file is None:
+            break
+        # 检查文件名是否为空
+        if file.filename == '':
+            result = ResultVo(success=False, result="未找到文件")
+            return jsonify(success(result).to_dict())
+        file_list.append(file)
 
     business_key = request.args.get('businessKey')
 
     assistant_service = get_or_create_assistant_service(business_key)
     try:
-        await assistant_service.upload_file(file)
+        await assistant_service.upload_file_list(file_list)
         result = ResultVo(success=True, result="success")
         return jsonify(success(result).to_dict())
     except Exception as e:
         result = ResultVo(success=False, result=str(e))
         return jsonify(success(result).to_dict())
 
+@assistantApi.route('/showKnowledgeRepository', methods=['GET'])
+@validate_query_params(
+    businessKey=fields.Str(required=True),
+)
+async def show_knowledge_repository():
+    business_key = g.validated_data['businessKey']
+
+    assistant_service = get_or_create_assistant_service(business_key)
+    file_id2_name_list = assistant_service.show_all_files()
+
+    result = ResultVo(success=True, result=file_id2_name_list)
+    return jsonify(success(result).to_dict())
+
+@assistantApi.route('/deleteKnowledgeRepository', methods=['POST'])
+@validate_json_params(
+    businessKey=fields.Str(required=True),
+    fileId=fields.Int(required=True),
+)
+async def delete_knowledge_repository():
+    file_id = g.validated_data['fileId']
+    business_key = g.validated_data['businessKey']
+
+    assistant_service = get_or_create_assistant_service(business_key)
+    delete_result = assistant_service.delete_file(file_id)
+
+    if delete_result == 1:
+        result = ResultVo(success=True, result="删除成功")
+    else:
+        result = ResultVo(success=False, result="删除失败")
+
+    return jsonify(success(result).to_dict())
 

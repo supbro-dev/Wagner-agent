@@ -16,7 +16,7 @@ import {
 import {Bubble, Prompts, Sender, ThoughtChain} from "@ant-design/x";
 import {
     CloudUploadOutlined,
-    LikeOutlined, LoadingOutlined,
+    LikeOutlined, LoadingOutlined, UnorderedListOutlined,
     UploadOutlined,
     UserOutlined
 } from "@ant-design/icons";
@@ -24,8 +24,7 @@ import {useEffect, useState} from "react";
 import markdownit from "markdown-it";
 import {useLocation} from "react-router-dom";
 import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
-import {Line} from "@ant-design/plots";
-const { Paragraph, Text } = Typography;
+
 
 const aiAvatar = {
     color: '#f56a00',
@@ -37,14 +36,6 @@ const userAvatar = {
 };
 
 const md = markdownit({ html: true, breaks: true });
-
-const promptList = [{
-    key: '0',
-    icon: <UploadOutlined style={{ color: '#FAAD14' }} />,
-    description: '上传你的知识库文档(支持markdown)',
-    disabled: false,
-}]
-
 
 const Assistant = () => {
     const [loading, setLoading] = useState(false);
@@ -85,6 +76,9 @@ const Assistant = () => {
     const [msgId2AddProceduralMemoryButtonAttr, setMsgId2AddProceduralMemoryButtonAttr] = useState({});
     const [currentAddProceduralMemoryButtonAttr, setCurrentAddProceduralMemoryButtonAttr] = useState({show:false, color:"default", icon:<LikeOutlined />, canClick:true});
     const [expandedKeys, setExpandedKeys] = useState(['reasoning']);
+
+    const [showKnowledgeRepositoryBubble, setShowKnowledgeRepositoryBubble] = useState(false);
+    const [knowledgeRepositoryContent, setKnowledgeRepositoryContent] = useState('');
 
 
 
@@ -162,6 +156,7 @@ const Assistant = () => {
         setBubbleLoading(true)
         setShowCurrentAiBubble(true)
         setShowThoughtChain(false)
+        setShowKnowledgeRepositoryBubble(false)
 
         clearAllCurrentData()
 
@@ -259,15 +254,19 @@ const Assistant = () => {
     const handleFileUpload = async () => {
         if (fileList.length === 0) return;
 
-        const file = fileList[0].originFileObj;
-        const formData = new FormData();
-        formData.append('file', file);
-
         setUploading(true);
         setUploadProgress(0);
 
         try {
-            const response = await fetch(`/agentApi/v1/assistant/uploadFile?businessKey=${businessKey}`, {
+            // 创建一个FormData实例用于上传所有文件
+            const formData = new FormData();
+
+            // 将所有文件添加到FormData中
+            fileList.forEach((fileObj, index) => {
+                formData.append(`file${index}`, fileObj.originFileObj);
+            });
+
+            const response = await fetch(`/agentApi/v1/assistant/uploadMultiDocs?businessKey=${businessKey}`, {
                 method: 'POST',
                 body: formData,
             });
@@ -308,6 +307,52 @@ const Assistant = () => {
         } else {
             return addProceduralMemoryButtonAttr
         }
+    }
+
+    const showKnowledgeRepository= () => {
+        setShowCurrentAiBubble(false)
+        // 更新AI对话
+        if (response) {
+            // 更新实时bubble到list
+            updateAiConversationList(response, currentMsgId)
+            setResponse(''); // 清空旧响应
+        }
+        // 更新用户对话
+        updateUserConversationList('浏览知识库文件')
+
+        fetchGet(`/agentApi/v1/assistant/showKnowledgeRepository?businessKey=${businessKey}`, (data) => {
+            setShowKnowledgeRepositoryBubble(true)
+            setKnowledgeRepositoryContent(data.data.result)
+        })
+    }
+
+    const deleteKnowledgeRepository = (fileId) => {
+        fetchPost(`/agentApi/v1/assistant/deleteKnowledgeRepository`, {
+            businessKey,
+            fileId,
+        }, (data) => {
+            messageApi.success('删除成功')
+            showKnowledgeRepository()
+        })
+    }
+
+    const renderKnowledgeRepositoryContent =(result) => {
+        let repoList = []
+        for (const i in result) {
+            const repo = result[i]
+            repoList.push((
+                <div key={i}><span>{repo[1]}<a href="#" onClick={() => deleteKnowledgeRepository(repo[0])}> 【删除】</a></span></div>
+            ))
+        }
+
+
+        return (
+            <div>
+                <div><span>知识库文档如下：</span></div>
+                <div style={{ height: '10px' }}></div>
+                {repoList}
+            </div>
+        )
     }
 
     const addProceduralMemory = (msgId, isCurrent = false) => {
@@ -379,6 +424,24 @@ const Assistant = () => {
             }
         })
     }
+
+    const promptList = [{
+        key: '0',
+        icon: <UploadOutlined style={{ color: '#FAAD14' }} />,
+        description: '上传你的知识库文档(支持多个文件，文件类型支持md,txt)',
+        disabled: false,
+        onClick: () => {
+            showModal()
+        },
+    },{
+        key: '1',
+        icon: <UnorderedListOutlined style={{ color: '#108ee9' }}  />,
+        description: '浏览知识库文件',
+        disabled: false,
+        onClick: () => {
+            showKnowledgeRepository()
+        }
+    }]
 
     // 初始化数据
     useEffect(() => {
@@ -480,10 +543,14 @@ const Assistant = () => {
                                 </Space>
                             )}
                     />
-
+                    <Bubble content={knowledgeRepositoryContent} messageRender={renderKnowledgeRepositoryContent} style={showKnowledgeRepositoryBubble?{}:{visibility: 'hidden'}}
+                            avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
+                            header={"AI数据员"}
+                    />
                     {contextHolder}
+
                     <Prompts title="" items={promptList} onItemClick={info => {
-                        showModal();
+                        info.data.onClick()
                     }}/>
                     <Sender
                         loading={loading}
@@ -522,15 +589,21 @@ const Assistant = () => {
                     fileList={fileList}
                     onChange={handleFileChange}
                     beforeUpload={() => false} // 阻止默认上传行为
-                    accept=".md,.markdown"
-                    maxCount={1}
+                    accept=".md,.txt"
+                    maxCount={10}
+                    multiple={true}
                 >
                     <Button icon={<UploadOutlined />}>选择文件</Button>
                 </Upload>
 
                 {fileList.length > 0 && (
                     <div style={{ marginTop: 16 }}>
-                        <p>已选择文件: {fileList[0].name}</p>
+                        <p>已选择 {fileList.length} 个文件:</p>
+                        <ul>
+                            {fileList.map((file, index) => (
+                                <li key={index}>{file.name}</li>
+                            ))}
+                        </ul>
                         {uploading && (
                             <Progress percent={uploadProgress} status="active" />
                         )}
