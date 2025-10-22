@@ -25,6 +25,7 @@ class AssistantState(InputState):
 
     # rag内容
     rag_docs: list = field(default_factory=list)
+    rag_content: str = ""
 
     # 查询的记忆内容
     memories:list = field(default_factory=list)

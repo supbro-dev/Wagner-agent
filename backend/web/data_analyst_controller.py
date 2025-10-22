@@ -6,7 +6,7 @@ from quart import Blueprint, jsonify, Response, g
 from model.response import success
 from service.agent.data_analyst_service import create_service, get_service, DataAnalystService, \
     get_or_create_data_analyst_service
-from web.validate.validator import validate_query_params
+from web.validate.validator import validate_query_params, validate_json_params
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
 
@@ -30,7 +30,7 @@ async def welcome():
 
 
 @dataAnalystApi.route('/question', methods=['POST'])
-@validate_query_params(
+@validate_json_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
     question=fields.Str(required=True)
@@ -49,7 +49,7 @@ def handle_question():
 
 # 中断取消专用
 @dataAnalystApi.route('/resumeInterrupt', methods=['POST'])
-@validate_query_params(
+@validate_json_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
     resume_type=fields.Str(required=True)

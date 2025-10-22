@@ -15,9 +15,8 @@ import {
 } from "antd";
 import {Bubble, Prompts, Sender, ThoughtChain} from "@ant-design/x";
 import {
-    MoreOutlined,
-    SignalFilled, SignatureFilled,
-    SyncOutlined,
+    CloudUploadOutlined,
+    LikeOutlined, LoadingOutlined,
     UploadOutlined,
     UserOutlined
 } from "@ant-design/icons";
@@ -47,21 +46,13 @@ const promptList = [{
 }]
 
 
-
-
-const items = [
-    {
-        key: 'item-1',
-        title: 'Click me to expand the content',
-        content: "dkdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        status: 'success',
-    }
-];
-
 const Assistant = () => {
     const [loading, setLoading] = useState(false);
     const [bubbleLoading, setBubbleLoading] = useState(false);
-    const [showNewAiBubble, setShowNewAiBubble] = useState(false);
+
+    const [showCurrentAiBubble, setShowCurrentAiBubble] = useState(false);
+    const [currentMsgId, setCurrentMsgId] = useState('');
+
     const [value, setValue] = useState('');
     const [response, setResponse] = useState('');
     const [messageApi, contextHolder] = message.useMessage();
@@ -86,11 +77,13 @@ const Assistant = () => {
     const [taskSize, setTaskSize] = useState(0)
     const [taskNames, setTaskNames] = useState('');
     const [ragDocSize, setRagDocSize] = useState(0)
-    const [ragDocNameList, setRagDocNameList] = useState([]);
+    const [ragContent, setRagContent] = useState('');
     const [memorySize, setMemorySize] = useState(0);
     const [memoryContent, setMemoryContent] = useState("")
     const [savedMemoryContent, setSavedMemoryContent] = useState("")
     const [reasoningContent, setReasoningContent] = useState('');
+    const [msgId2AddProceduralMemoryButtonAttr, setMsgId2AddProceduralMemoryButtonAttr] = useState({});
+    const [currentAddProceduralMemoryButtonAttr, setCurrentAddProceduralMemoryButtonAttr] = useState({show:false, color:"default", icon:<LikeOutlined />, canClick:true});
     const [expandedKeys, setExpandedKeys] = useState(['reasoning']);
 
 
@@ -104,13 +97,14 @@ const Assistant = () => {
         );
     };
 
-    const updateAiConversationList = (content) => {
+    const updateAiConversationList = (content, msgId) => {
         const theList = conversationList
         theList.push({
             avatar: aiAvatar,
             placement: "start",
             content: content,
             type: 'ai',
+            msgId:msgId,
         })
         setConversationList(theList)
     }
@@ -142,7 +136,7 @@ const Assistant = () => {
     const welcome = async () => {
         setLoading(true);
         setBubbleLoading(true)
-        setShowNewAiBubble(true)
+        setShowCurrentAiBubble(true)
 
         fetchGet(`/agentApi/v1/assistant/welcome?businessKey=${businessKey}`, (data) => {
             setLoading( false)
@@ -151,16 +145,30 @@ const Assistant = () => {
         })
     }
 
+    const clearAllCurrentData = () => {
+        setReasoningContent( '')
+        setTaskNames('')
+        setTaskSize(0)
+        setRagDocSize(0)
+        setRagContent('')
+        setMemorySize(0)
+        setMemoryContent('')
+        setSavedMemoryContent('')
+        setCurrentMsgId('')
+    }
+
     const submitQuestionStream = async (question) => {
         setLoading(true);
         setBubbleLoading(true)
-        setShowNewAiBubble(true)
+        setShowCurrentAiBubble(true)
         setShowThoughtChain(false)
+
+        clearAllCurrentData()
 
         // 更新AI对话
         if (response) {
             // 更新实时bubble到list
-            updateAiConversationList(response)
+            updateAiConversationList(response, currentMsgId)
 
             setResponse(''); // 清空旧响应
         }
@@ -172,7 +180,7 @@ const Assistant = () => {
         }
 
         const firstGetEvent = {current:false}
-        const currentMsgId = {current:''}
+        const lastMsgId = {current:''}
 
         doStream(`/agentApi/v1/assistant/askAssistant?question=${encodeURIComponent(question)}&sessionId=${sessionId}&businessKey=${businessKey}`,
             (event) => {
@@ -187,8 +195,8 @@ const Assistant = () => {
                         if (data.token) {
                             setResponse(prev => prev + data.token); // 增量更新
                         }
-                        if (currentMsgId.current === "" && data.msgId) {
-                            currentMsgId.current = data.msgId
+                        if (data.msgId && data.msgId !== '') {
+                            lastMsgId.current = data.msgId
                         }
                         // 设置推理内容
                         if (data.reasoningContent) {
@@ -204,8 +212,8 @@ const Assistant = () => {
                             setRagDocSize(data.ragDocSize)
                         }
                         // 设置检索到的文档名称
-                        if (data.ragDocNameList) {
-                            setRagDocNameList(data.ragDocNameList)
+                        if (data.ragContent) {
+                            setRagContent(data.ragContent)
                         }
                         if (data.memorySize) {
                             setMemorySize(data.memorySize)
@@ -226,6 +234,8 @@ const Assistant = () => {
             },
             () => {
                 setLoading(false);
+                setCurrentMsgId(lastMsgId.current)
+                setCurrentAddProceduralMemoryButtonAttr(prev => ({...prev, show:true}))
             },
             () => {
                 setLoading(false);
@@ -291,6 +301,85 @@ const Assistant = () => {
         setFileList(newFileList);
     };
 
+    const getAddProceduralMemoryAttr = (msgId) => {
+        let addProceduralMemoryButtonAttr = msgId2AddProceduralMemoryButtonAttr[msgId]
+        if (!addProceduralMemoryButtonAttr) {
+            return {show:true, color:"default", icon:<LikeOutlined />, canClick:true}
+        } else {
+            return addProceduralMemoryButtonAttr
+        }
+    }
+
+    const addProceduralMemory = (msgId, isCurrent = false) => {
+        if (isCurrent) {
+            // 如果是当前对话框，需要等待对话框对话结束
+            if (!currentAddProceduralMemoryButtonAttr.show) {
+                messageApi.error('对话还未结束,无法生成记忆，请等待');
+                return
+            }
+        }
+        if (isCurrent) {
+            setCurrentAddProceduralMemoryButtonAttr(prev => {
+                return {
+                    ...prev,
+                    icon:<LoadingOutlined />,
+                    canClick:false,
+                }
+            })
+        } else {
+            let addProceduralMemoryButtonAttr = msgId2AddProceduralMemoryButtonAttr[msgId]
+            if (!addProceduralMemoryButtonAttr) {
+                addProceduralMemoryButtonAttr = {}
+            }
+            addProceduralMemoryButtonAttr = {
+                ...addProceduralMemoryButtonAttr,
+                show:false,
+                color:"default",
+                icon:<LoadingOutlined />,
+                canClick:false}
+            setMsgId2AddProceduralMemoryButtonAttr(prev => {
+                return {
+                    ...prev,
+                    msgId: addProceduralMemoryButtonAttr
+                }
+            })
+        }
+
+
+        fetchPost(`/agentApi/v1/assistant/addProceduralMemory`, {
+            sessionId,
+            businessKey,
+            msgId
+        },(data) => {
+            if (data.data.success) {
+                if (isCurrent) {
+                    setCurrentAddProceduralMemoryButtonAttr(prev => {
+                        return {
+                            ...prev,
+                            color: 'gold',
+                            icon:<LikeOutlined />,
+                            canClick:false,
+                        }
+                    })
+                } else {
+                    let addProceduralMemoryButtonAttr = msgId2AddProceduralMemoryButtonAttr[msgId]
+                    addProceduralMemoryButtonAttr = {
+                        ...addProceduralMemoryButtonAttr,
+                        color: 'gold',
+                        icon:<LikeOutlined />,
+                        canClick:false,
+                    }
+                    setMsgId2AddProceduralMemoryButtonAttr(prev => {
+                        return {
+                            ...prev,
+                            msgId:addProceduralMemoryButtonAttr
+                        }
+                    })
+                }
+            }
+        })
+    }
+
     // 初始化数据
     useEffect(() => {
         // 设置sessionId，用于做短期记忆隔离
@@ -303,10 +392,16 @@ const Assistant = () => {
     for (const i in conversationList) {
         const conversation = conversationList[i]
         if (conversation.type === 'ai') {
+            const buttonAttr = getAddProceduralMemoryAttr(conversation.msgId)
             const bubble = (
                 <Bubble content={conversation.content} messageRender={renderMarkdown}
                         avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement}
                         header={"AI助理"}
+                        footer={(messageContext) => (
+                            <Space >
+                                <Button color={buttonAttr.color} variant="text" size="small" icon={buttonAttr.icon} onClick={buttonAttr.canClick ? () => addProceduralMemory(conversation.msgId): () => {}} />
+                            </Space>
+                        )}
                 />
             )
             agentContentBubble.push(bubble)
@@ -356,7 +451,7 @@ const Assistant = () => {
                             {
                                 key: 'ragDocs',
                                 title: `检索到${ragDocSize}个文档`,
-                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ragDocNameList}</div>,
+                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ragContent}</div>,
                                 status: 'success',
                             },
                             {
@@ -373,14 +468,15 @@ const Assistant = () => {
                             }
                         ]} collapsible={collapsible} />
                     </Card>
-                    <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
+                    <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showCurrentAiBubble?{}:{visibility: 'hidden'}}
                             avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                             header={"AI数据员"}
                             footer={(messageContext) => (
                                 <Space >
                                     <Tooltip placement="bottomRight" title={savedMemoryContent}>
-                                        <Button color={savedMemoryContent === "" ? "default":"gold"} variant="text" size="small" icon={<SignatureFilled />} />
+                                        <Button color={savedMemoryContent === "" ? "default":"gold"} variant="text" size="small" icon={<CloudUploadOutlined  />} />
                                     </Tooltip>
+                                    <Button color={currentAddProceduralMemoryButtonAttr.color} variant="text" size="small" icon={currentAddProceduralMemoryButtonAttr.icon} onClick={currentAddProceduralMemoryButtonAttr.canClick ? () => addProceduralMemory(currentMsgId, true) : () => {}} />
                                 </Space>
                             )}
                     />
