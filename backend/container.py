@@ -5,6 +5,7 @@ from config import Config
 from dao.agent_def_dao import AgentDefDAO
 from dao.llm_tool_dao import LLMToolDAO
 from dao.query_data_task_dao import QueryDataTaskDAO
+from dao.rag_file_dao import RagFileDAO
 
 
 class DaoContainer(containers.DeclarativeContainer):
@@ -33,6 +34,11 @@ class DaoContainer(containers.DeclarativeContainer):
 
     llm_tool_dao = providers.Singleton(
         LLMToolDAO,
+        engine=engine
+    )
+
+    rag_file_dao = providers.Singleton(
+        RagFileDAO,
         engine=engine
     )
 
