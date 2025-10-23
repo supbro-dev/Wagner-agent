@@ -223,7 +223,7 @@ class AssistantService:
 
         task_details = []
         task_names = []
-        task_content = "你能使用的所有任务信息如下:\n"
+        task_content = "你能使用的所有任务信息如下(任务的'获取到结果之后的数据加工逻辑'字段只是让你了解这个任务最终返回的结果都包含哪些内容，便于你进行下一步推理):\n"
         for task in tasks:
             task_names.append(task.name)
             task_detail = QueryDataTaskDetail.model_validate(json.loads(task.task_detail))
@@ -250,12 +250,12 @@ class AssistantService:
         docs = retriever_from_llm.invoke(human_msg.content)
         rag_content = "查询知识库搜索到相关信息如下:\n"
         if len(docs) > 0:
-            for doc in docs:
+            for index, doc in enumerate(docs):
                 file_name = doc.metadata["source"]
                 upload_time = doc.metadata["upload_time"]
                 content = doc.page_content
 
-                rag_content += f"{content} \n内容来源于:{file_name},上传时间:{upload_time}\n"
+                rag_content += f"第{index}条结果:\n{content} \n内容来源于:{file_name},上传时间:{upload_time}\n"
         else:
             rag_content += "未查询到相关信息"
 
