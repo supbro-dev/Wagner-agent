@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "process_name": "batch-picking",
+      "target": 200
+    },
+    {
+      "process_name": "single-item-picking",
+      "target": 100
+    },
+    {
+      "process_name": "packing",
+      "target": 300
+    }
+  ]
+}

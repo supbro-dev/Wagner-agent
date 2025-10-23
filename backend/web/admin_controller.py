@@ -18,7 +18,7 @@ from config import Config
 from dao import query_data_task_dao
 from model.query_data_task_detail import QueryDataTaskDetail
 from model.response import success
-from service.agent.model.state import State, InputState
+from service.agent.model.state import DataAnalystState, InputState
 from util.config_util import read_private_config
 from web.data_analyst_controller import get_or_create_data_analyst_service
 from web.vo.result_vo import ResultVo

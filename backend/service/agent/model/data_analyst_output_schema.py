@@ -25,6 +25,10 @@ class IntentSchema(BaseModel):
         default=None,
         description="涉及的任务名称（如果是执行/新建/编辑）"
     )
+    params: Optional[str] = Field(
+        default=None,
+        description="查询条件"
+    )
 
 
 # 任务的模板

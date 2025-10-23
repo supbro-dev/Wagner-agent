@@ -17,5 +17,8 @@ def create_app(Config=None):
 
     from web.assistant_controller import assistantApi
     app.register_blueprint(assistantApi, url_prefix='/agentApi/v1/assistant/')
+    
+    from web.json_file_controller import jsonFileApi
+    app.register_blueprint(jsonFileApi,  url_prefix='/api/v1/mocks')
 
     return app

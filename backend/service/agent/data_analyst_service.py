@@ -47,12 +47,12 @@ from entity.agent_def_entity import AgentDefType, AgentDefEntity
 from entity.llm_tool_entity import LLMToolType, LLMToolEntity
 from entity.query_data_task_entity import QueryDataTaskEntity
 from model.llm_http_tool_content import LLMHTTPToolContent
-from model.query_data_task_detail import QueryDataTaskDetail
+from model.query_data_task_detail import QueryDataTaskDetail, DEFAULT_TASK_TEMPLATE
 from service.agent.model.interrupt import WorkflowInterrupt
 from service.agent.model.data_analyst_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
-from service.agent.model.state import State, InputState
+from service.agent.model.state import DataAnalystState, InputState
 from service.tool.llm_http_tool import create_llm_http_tool
 from service.tool.mcp_client_tool import create_mcp_client_tools
 from util import datetime_util
@@ -107,15 +107,6 @@ DEFAULT_INTERRUPT_CONFIG = {
             "allow_edit": True,
             "allow_respond": True,
         }
-
-
-# 默认任务模板
-DEFAULT_TASK_TEMPLATE = QueryDataTaskDetail(
-        target="无。(请说明该任务的使用意图)",
-        query_param="无。(请索命该任务执行时需要使用哪些查询参数，例如查询日期为昨天)",
-        data_operation="无。(请详细描述，查询到结果之后希望进行哪些加工处理)",
-        data_format="无。(只能选用表格、折线图)"
-    )
 
 
 class CustomCallbackHandler(BaseCallbackHandler):
@@ -198,7 +189,7 @@ class DataAnalystService:
         :param graph_name:
         :return: graph
         """
-        builder = StateGraph(State, input_schema=InputState)
+        builder = StateGraph(DataAnalystState, input_schema=InputState)
         # 新Graph
         builder.add_node(GraphNode.INTENT_CLASSIFIER, self.intent_classifier)
         builder.add_node(GraphNode.QUERY_DATA_NODE, self.query_data)
@@ -408,7 +399,7 @@ class DataAnalystService:
 
 
     # NODES
-    async def intent_classifier(self, state: State):
+    async def intent_classifier(self, state: DataAnalystState):
         """
         意图判断节点
         :param state:
@@ -428,20 +419,21 @@ class DataAnalystService:
             
             共有以下几种意图
             1. {QUERY_DATA} - 查询数据  
-            2. {EXECUTE} - 执行某个任务
+            2. {EXECUTE} - 执行某个任务，注意：执行任务时，可以指定某些查询条件
             3. {CREATE} - 创建新任务
             4. {EDIT} - 修改/编辑某个任务
             5. {DELETE} - 删除某个任务
-            6. {TEST_RUN} - 试算某个任务
+            6. {TEST_RUN} - 试运行（试跑/试算）某个任务，注意：试运行时，可以指定某些查询条件
             7. {SAVE} - 保存某个任务
             8. {OTHERS} - 既不查询数据也和任务操作无关     
             
             按JSON格式输出分类结果，无关话题一律归类为OTHERS。
             
-            **重要说明**: 以下示例仅用于展示意图分类逻辑，不是实际对话历史，不要直接解析为意图。
+            **重要说明**: 以下few-shot示例仅用于展示意图分类逻辑，不是实际对话历史，不要直接解析为意图：
                        """),
             # 明确标识示例区
             MessagesPlaceholder("examples", optional=True),
+            ("system", "以下才是真实对话："),
             # 包含所有历史对话
             *state.messages
         ])
@@ -450,6 +442,8 @@ class DataAnalystService:
             # 使用few-shot示例（强调AI必须返回JsonOutputParser的格式，不加AI会尝试返回自然语言的KV）：
             ("human", "执行任务：本小组上个月的月度人效报告"),
             ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"月度人效报告\"}"),
+            ("human", "执行任务：小组人效报告，查询条件：2025年12月10日"),
+            ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"小组人效报告\", \"params\": \"2025年12月10日\"}"),
             ("human", "创建任务：一个工时分析报表，用来分析每天组内员工的工时分布"),
             ("ai",
              "{\"intent_type\": \"" + CREATE + "\", \"task_name\": \"工时分析报表\"}"),
@@ -480,27 +474,23 @@ class DataAnalystService:
                     state.task_id = result["task_id"]
                 if "task_name" in result:
                     state.task_name = result["task_name"]
+                if intent_type in [EXECUTE, TEST_RUN]:
+                    if "params" in result:
+                        state.params = result["params"]
+                    else:
+                        state.params = None
             else:
                 # 识别出名称为空时，返回LLM的默认对话
                 state.intent_type = DEFAULT
         elif intent_type in [CREATE, EDIT]:
-            if "task_name" in result or "task_id" in result:
+            if "task_name" in result:
                 if state.task_name != result["task_name"]:
                     # 清空上下文
-                    state.last_run_msg_id = None
-                    state.last_standard_data = None
-                    state.task_detail = None
-                    state.first_time_create = True
-                    state.target = None
-                    state.task_id = None
-                    state.task_name = None
+                    state.clear_state()
 
                     state.intent_type = intent_type
-                    if "task_id" in result:
-                        state.task_id = result["task_id"]
                     if "task_name" in result:
                         state.task_name = result["task_name"]
-
             else:
                 # 识别出名称为空时，返回LLM的默认对话
                 state.intent_type = DEFAULT
@@ -511,7 +501,7 @@ class DataAnalystService:
 
         return state
 
-    async def default_node(self, state:State):
+    async def default_node(self, state:DataAnalystState):
         # 初次调用，使用原始用户查询
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=f"""
@@ -530,7 +520,7 @@ class DataAnalystService:
         }
 
 
-    def find_task_in_db(self, state: State):
+    def find_task_in_db(self, state: DataAnalystState):
         """
         根据任务名称/任务id查找任务详情
         :param state:
@@ -547,7 +537,7 @@ class DataAnalystService:
         else:
             return state
 
-    def find_task_in_store(self, state:State):
+    def find_task_in_store(self, state:DataAnalystState):
         """
         去向量存储中查找相近的任务信息
         :param state:
@@ -573,7 +563,7 @@ class DataAnalystService:
 
         return state
 
-    async def execute_task(self, state:State):
+    async def execute_task(self, state:DataAnalystState):
         """
         调用工具执行任务
         :param state:
@@ -627,7 +617,7 @@ class DataAnalystService:
                 "messages": [response],
             }
 
-    async def query_data(self, state: State):
+    async def query_data(self, state: DataAnalystState):
         """
         使用llm+业务工具进行对话和数据查询
         :param state:
@@ -646,7 +636,7 @@ class DataAnalystService:
             "messages": [response],
         }
 
-    def same_name_when_create(self, state:State):
+    def same_name_when_create(self, state:DataAnalystState):
         """
         创建任务时找到同名任务回复给用户
         :param state:
@@ -657,7 +647,7 @@ class DataAnalystService:
             "messages": [cast(AIMessage, response)],
         }
 
-    async def edit_task(self, state: State):
+    async def edit_task(self, state: DataAnalystState):
         parser = JsonOutputParser(pydantic_object=TaskSchema)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -684,7 +674,7 @@ class DataAnalystService:
         ])
 
         examples = [
-            ("human", "任务的目标：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
+            ("human", "任务内容：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
             ("ai",
              "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
         ]
@@ -701,7 +691,7 @@ class DataAnalystService:
         return state
 
 
-    async def delete_task(self, state:State):
+    async def delete_task(self, state:DataAnalystState):
         """
         删除任务
         :param state:
@@ -736,7 +726,7 @@ class DataAnalystService:
             "messages": [response],
         }
 
-    async def create_task(self, state:State):
+    async def create_task(self, state:DataAnalystState):
         """
         解析用户输入中对任务模板的补充
         :param state:
@@ -771,7 +761,7 @@ class DataAnalystService:
             ])
 
             examples = [
-                ("human", "任务的目标：每日工作效率统计。查询参数：查询昨天的数据，数据加工逻辑：单加一列：工作量除以工作时长为工作效率，数据格式：表格"),
+                ("human", "任务内容：每日工作效率统计。查询参数：查询昨天的数据，数据加工逻辑：单加一列：工作量除以工作时长为工作效率，数据格式：表格"),
                 ("ai", "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\", \"data_format\":\"表格\"}"),
             ]
 
@@ -788,7 +778,7 @@ class DataAnalystService:
 
     #
 
-    def save_task(self, state:State):
+    def save_task(self, state:DataAnalystState):
         """
         保存任务
         为什么不使用llm调用tool的方式保存？因为是使用resume_stream的方式调用到该节点的，这种方式没法把llm的输出by token返回
@@ -811,7 +801,7 @@ class DataAnalystService:
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
             # 存储到向量空间
-            self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务目标：{state.task_detail.target}"], metadatas=[{
+            self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务内容：{state.task_detail.target}"], metadatas=[{
                         "task_id": id,
                         "task_name": state.task_name,
                         "task_detail": entity.task_detail
@@ -825,7 +815,7 @@ class DataAnalystService:
         }
 
 
-    async def test_run_task(self, state:State):
+    async def test_run_task(self, state:DataAnalystState):
         """
         任务试跑
         :param state:
@@ -843,6 +833,7 @@ class DataAnalystService:
                 任务名称：{state.task_name}
                 {state.task_detail.to_desc()}
                 
+                {f"试运行的查询条件为：{state.params}" if state.params is not None else ""}              
                 如果你所用到的工具的参数涉及到日期，默认查询当前时间的前一天
                 
                 只用返回按用户要求进行数据加工之后的结果
@@ -862,7 +853,8 @@ class DataAnalystService:
 
                            任务名称：{state.task_name}
                            {state.task_detail.to_desc()}
-
+                           
+                           {f"试运行的查询条件为：{state.params}" if state.params is not None else ""}
                            如果你所用到的工具的参数涉及到日期，默认查询当前时间的前一天
 
                            只用返回按用户要求进行数据加工之后的结果。
@@ -877,7 +869,7 @@ class DataAnalystService:
             }
 
 
-    async def convert_to_standard_format(self, state:State):
+    async def convert_to_standard_format(self, state:DataAnalystState):
         all_messages = state.messages
         last_ai_message = all_messages[-1]
 
@@ -959,7 +951,7 @@ class DataAnalystService:
         else:
             return state
 
-    async def how_to_improve_task(self, state:State):
+    async def how_to_improve_task(self, state:DataAnalystState):
         """
         在用户更新任务模板的过程中，对比模板是否填写完善
         :param state:
@@ -1003,7 +995,7 @@ class DataAnalystService:
         }
 
     # EDGES
-    def after_intent_classifier(self, state: State) -> Literal[GraphNode.SAVE_TASK, GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
+    def after_intent_classifier(self, state: DataAnalystState) -> Literal[GraphNode.SAVE_TASK, GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
         if state.intent_type == DEFAULT:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
@@ -1021,7 +1013,7 @@ class DataAnalystService:
         else:
             return END
 
-    def check_exist_and_next_node(self, state: State) -> Literal[
+    def check_exist_and_next_node(self, state: DataAnalystState) -> Literal[
             GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.CREATE_TASK, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
         if state.task_detail is None:
             if state.intent_type == CREATE:
@@ -1042,7 +1034,7 @@ class DataAnalystService:
             else:
                 return END
 
-    def check_exist_in_store_and_next_node(self, state: State) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
+    def check_exist_in_store_and_next_node(self, state: DataAnalystState) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
         if state.task_detail is not None:
             if state.intent_type == CREATE:
                 return GraphNode.CREATE_TASK
@@ -1068,7 +1060,7 @@ class DataAnalystService:
 
 
 
-    def need_invoke_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, GraphNode.END]:
+    def need_invoke_tool(self, state: DataAnalystState) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -1090,7 +1082,7 @@ class DataAnalystService:
         else:
             return END
 
-    def after_invoke_tool(self, state: State) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
+    def after_invoke_tool(self, state: DataAnalystState) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
         if state.intent_type == EXECUTE:
             return GraphNode.EXECUTE_TASK
         elif state.intent_type == TEST_RUN:
@@ -1099,7 +1091,7 @@ class DataAnalystService:
             return END
 
 
-    def need_invoke_delete_task_tool(self, state: State) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, GraphNode.END]:
+    def need_invoke_delete_task_tool(self, state: DataAnalystState) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(

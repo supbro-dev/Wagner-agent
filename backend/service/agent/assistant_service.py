@@ -38,7 +38,7 @@ from entity.rag_file_entity import RagFileEntity
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.data_analyst_service import get_or_create_data_analyst_service
 from service.agent.model.assistant_output_schema import DEFAULT, QUERY_DATA, IntentSchema
-from service.agent.model.assistant_state import AssistantState
+from service.agent.model.state import AssistantState
 from service.agent.model.state import InputState
 from service.agent.prompt import prompts
 from service.agent.prompt.prompts import ASSISTANT_EXTRACT_QUERYING_DATA_PROMPT

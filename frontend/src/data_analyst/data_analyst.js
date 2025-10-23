@@ -14,10 +14,12 @@ import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
 const aiAvatar = {
     color: '#f56a00',
     backgroundColor: '#fde3cf',
+    width: '55%',
 };
 const userAvatar = {
     color: '#fff',
     backgroundColor: '#87d068',
+    width: '55%',
 };
 
 const md = markdownit({ html: true, breaks: true });
