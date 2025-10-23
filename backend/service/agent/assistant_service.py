@@ -38,7 +38,7 @@ from entity.rag_file_entity import RagFileEntity
 from model.query_data_task_detail import QueryDataTaskDetail
 from service.agent.data_analyst_service import get_or_create_data_analyst_service
 from service.agent.model.assistant_output_schema import DEFAULT, QUERY_DATA, IntentSchema
-from service.agent.model.state import AssistantState
+from service.agent.model.state import AssistantState, AssistantInputState
 from service.agent.model.state import InputState
 from service.agent.prompt import prompts
 from service.agent.prompt.prompts import ASSISTANT_EXTRACT_QUERYING_DATA_PROMPT
@@ -47,7 +47,7 @@ from util.config_util import read_private_config
 
 service_map = {}
 
-AI_CHAT_NODES = ["chat", "default"]
+AI_CHAT_NODES = ["chat", "default", "executor"]
 AI_REASONER_NODES = ["reason"]
 
 
@@ -109,7 +109,6 @@ class AssistantService:
         # 初始化记忆(mem0)
         self.__memory = self.__create_memory()
         # 创建数据员子图调用工具
-        # transfer_to_data_analyst_agent = create_handoff_tool(agent_name="data_analyst_agent")
         self.__data_analyst_tool = [ask_data_analyst]
         # 初始化langGraph
         self.__data_analyst_graph = get_or_create_data_analyst_service(business_key).graph
@@ -120,7 +119,7 @@ class AssistantService:
 
 
 
-    def get_event_stream_function(self, input: str | None, session_id):
+    def get_event_stream_function(self, input: str | None, session_id, use_thinking):
         """
         获取流式方法，这个方法直接返回给前端使用
         :param input:
@@ -132,7 +131,7 @@ class AssistantService:
         async def async_event_stream():
             try:
 
-                stream = self.stream_question(input, session_id)
+                stream = self.stream_question(input, session_id, use_thinking)
 
                 # 直接异步迭代处理流数据
                 async for stream_mode, detail in stream:
@@ -194,11 +193,12 @@ class AssistantService:
 
         return async_event_stream
 
-    def stream_question(self, query, session_id):
+    def stream_question(self, query, session_id, use_thinking):
         """
         流式触发graph
         :param query: 用户提问信息
         :param session_id: 用来做state的隔离
+        :param use_thinking: 是否使用推理模型
         :return:stream
         """
         # 上下文配置
@@ -207,7 +207,7 @@ class AssistantService:
         )
 
         stream = self.__graph.astream(
-            input=InputState(messages=[("user", query)], session_id = session_id),
+            input=AssistantInputState(messages=[("user", query)], session_id = session_id, use_thinking = use_thinking),
             config=config,
             stream_mode=["messages", "tasks"]
         )
@@ -249,12 +249,15 @@ class AssistantService:
         )
         docs = retriever_from_llm.invoke(human_msg.content)
         rag_content = "查询知识库搜索到相关信息如下:\n"
-        for doc in docs:
-            file_name = doc.metadata["source"]
-            upload_time = doc.metadata["upload_time"]
-            content = doc.page_content
+        if len(docs) > 0:
+            for doc in docs:
+                file_name = doc.metadata["source"]
+                upload_time = doc.metadata["upload_time"]
+                content = doc.page_content
 
-            rag_content += f"{content} \n内容来源于:{file_name},上传时间:{upload_time}\n"
+                rag_content += f"{content} \n内容来源于:{file_name},上传时间:{upload_time}\n"
+        else:
+            rag_content += "未查询到相关信息"
 
         return {
             "rag_docs": docs,
@@ -351,12 +354,60 @@ class AssistantService:
             "intent_type" :result["intent_type"],
         }
 
+    # 只用来执行任务，推荐在有知识库、有记忆的情况下使用
+    async def __executor(self, state:AssistantState):
+        """
+                使用llm进行推理
+                :param state:
+                :return:state
+                """
+        # 1.basic提示词
+        basic_system_prompt = self.__basic_system_template \
+                              + f""""
+                        当前日期:{datetime_util.get_current_date()}             
+        """
+
+        # 2.推理专用提示词
+        reason_prompt_content = prompts.get_assistant_system_prompt()
+
+        # 3.知识库提示词
+        knowledge_prompt_content = state.rag_content
+
+        # 4.记忆提示词
+        memory_content = state.memory_content
+
+        # 5.所有任务信息
+        task_content = state.task_content
+
+        all_messages = state.messages
+
+        sys_msg = SystemMessage(content="\n".join(
+            [basic_system_prompt, reason_prompt_content, knowledge_prompt_content, memory_content, task_content, "当需要调用工具执行任务得到数据结果时，概括每次调用的数据结果，以及你的思考过程，最后给出答案。"]))
+
+        if isinstance(all_messages[-1], ToolMessage):
+            prompt = ChatPromptTemplate.from_messages([
+                sys_msg,
+                *all_messages
+            ])
+        else:
+            prompt = ChatPromptTemplate.from_messages([
+                sys_msg, all_messages[-1]
+            ])
+
+        chain = prompt | self.__llm.bind_tools(self.__data_analyst_tool)
+
+        config = RunnableConfig(
+            configurable={"timeout": 600000}
+        )
+        response = await chain.ainvoke({},
+                                       config=config,
+                                       )
+
+        return {
+            "messages": [response]
+        }
+
     async def __default(self, state:AssistantState):
-        """
-        使用llm进行推理（只做rag和记忆读取）
-        :param state:
-        :return:state
-        """
         # 1.basic提示词
         basic_system_prompt = self.__basic_system_template \
                               + f""""
@@ -364,19 +415,16 @@ class AssistantService:
         """
 
         # 2.知识库提示词
-        knowledge_prompt_context = "\n查询知识库搜索到相关信息如下:\n"
-        if len(state.rag_docs) > 0:
-            knowledge_prompt_context += state.rag_docs
-        else:
-            knowledge_prompt_context += "无"
+        rag_content = state.rag_content
 
         # 3.记忆提示词
         memory_content = state.memory_content
 
         all_messages = state.messages
+
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content="\n".join(
-                [basic_system_prompt, knowledge_prompt_context, memory_content])),
+                [basic_system_prompt, rag_content, memory_content])),
             *all_messages,
         ])
         chain = prompt | self.__reasoner_llm
@@ -410,7 +458,7 @@ class AssistantService:
                 formatted_time = datetime_util.format_iso_2_datetime_at_zone(memory["created_at"])
                 memory_content += f"{memory["memory"]}(记忆产生于{formatted_time})\n"
         else:
-            memory_content += "无"
+            memory_content += "没有从记忆中获取到相关信息"
 
         return memory_content
 
@@ -539,6 +587,8 @@ class AssistantService:
                 
                 你需要执行的操作是:
                 {state.reasoning_context}
+                
+                先向用户复述你要执行的具体操作（严格按照操作执行的步骤），当需要调用工具执行任务得到数据结果时，概括每次调用的数据结果，最后给出你的答案。
                 """),
                 *all_messages,
             ])
@@ -555,7 +605,7 @@ class AssistantService:
                             你需要执行的操作是:
                             {state.reasoning_context}
                             
-                            先向用户负数你要执行的具体操作（严格按照操作执行的步骤），然后给出你的答案。
+                            先向用户复述你要执行的具体操作（严格按照操作执行的步骤），当需要调用工具执行任务得到数据结果时，概括每次调用的数据结果，最后给出你的答案。
                             """),
                 all_messages[-1], # 取最后一条直接执行命令
             ])
@@ -580,9 +630,12 @@ class AssistantService:
 
 
     # conditional edge
-    def __need_reason(self, state: AssistantState) -> Literal["reason", "default"]:
+    def __need_reason(self, state: AssistantState) -> Literal["reason", "default", "executor"]:
         if state.intent_type == QUERY_DATA:
-            return "reason"
+            if state.use_thinking:
+                return "reason"
+            else:
+                return "executor"
         else:
             return "default"
 
@@ -597,6 +650,12 @@ class AssistantService:
             return END
         else:
             return "data_analyst_tool"
+
+    def __after_invoke_tool(self, state: AssistantState) -> Literal["chat", "executor"]:
+        if state.use_thinking:
+            return "chat"
+        else:
+            return "executor"
 
 
     def __create_memory(self):
@@ -678,7 +737,7 @@ class AssistantService:
             return None
 
     def __create_graph(self, graph_name):
-        builder = StateGraph(AssistantState, input_schema=AssistantState)
+        builder = StateGraph(AssistantState, input_schema=AssistantInputState)
         builder.add_node("intent_classifier", self.__intent_classifier)
         builder.add_node("get_all_tasks", self.__get_all_tasks)
         builder.add_node("get_doc_content_from_vector", self.__get_doc_content_from_vector)
@@ -686,6 +745,7 @@ class AssistantService:
         builder.add_node("reason", self.__reason)
         builder.add_node("default", self.__default)
         builder.add_node("chat", self.__chat)
+        builder.add_node("executor", self.__executor)
         builder.add_node("data_analyst_tool", ToolNode(self.__data_analyst_tool))
 
         builder.add_edge(START, "get_all_tasks")
@@ -695,8 +755,9 @@ class AssistantService:
         builder.add_conditional_edges("intent_classifier", self.__need_reason)
         builder.add_edge("reason", "chat")
         builder.add_edge("default", END)
+        builder.add_conditional_edges("executor", self.__need_invoke_tool)
         builder.add_conditional_edges("chat", self.__need_invoke_tool)
-        builder.add_edge("data_analyst_tool", "chat")
+        builder.add_conditional_edges("data_analyst_tool", self.__after_invoke_tool)
 
         # 记忆功能
         if Config.MESSAGE_MEMORY_USE == "local":
@@ -847,7 +908,7 @@ class AssistantService:
         state = self.__graph.get_state(config=config)
 
         all_messages = state.values["messages"]
-        _, last_human_msg = self._find_last_human_message(all_messages, msg_id)
+        _, last_human_msg = self.__find_last_human_message(all_messages, msg_id)
 
         # 遍历所有消息，找到对应的消息
         interaction = []
@@ -872,11 +933,28 @@ class AssistantService:
                                    prompt=ASSISTANT_EXTRACT_QUERYING_DATA_PROMPT)
         return result
 
+    @tool
+    def __show_all_tasks(self, business_key: str) -> str:
+        """
+        根据业务键，查找所有任务信息
+
+        输入参数：
+        business_key: 业务键
+        """
+        tasks = self.__query_data_task_dao.get_all_tasks(business_key)
+
+        desc = "当前所有任务信息如下:\n"
+        for task in tasks:
+            detail = QueryDataTaskDetail.model_validate(json.loads(task.task_detail))
+            desc += f"任务名称：{task.task_name}\n{detail.to_desc()}\n\n"
+
+        return desc
+
 
 
 
 @tool
-async def ask_data_analyst(business_key:str, session_id:str, task_name:str) -> str:
+async def ask_data_analyst(business_key:str, session_id:str, task_name:str, params:str = "") -> str:
     """
     根据业务键和任务名，执行任务并返回任务结果
 
@@ -884,9 +962,11 @@ async def ask_data_analyst(business_key:str, session_id:str, task_name:str) -> s
     business_key: 业务键
     session_id：会话id
     task_name：任务名
+    params: 执行任务时的查询条件（可以不传任何查询条件）
     """
     data_analyst_service = get_or_create_data_analyst_service(business_key)
-    content = await data_analyst_service.question(f"执行任务:{task_name}", session_id)
+    query = f"执行任务:{task_name}" if params == "" else f"执行任务:{task_name}，查询条件:{params}"
+    content = await data_analyst_service.question(query, session_id)
 
     return content
 

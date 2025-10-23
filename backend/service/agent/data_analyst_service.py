@@ -582,6 +582,8 @@ class DataAnalystService:
                 任务详情:
                 {state.task_detail}
                 
+                {f"执行任务的查询条件为：{state.params}" if state.params is not None else ""}       
+                
                 """),
                 *all_messages  # 包含所有历史消息
             ])
@@ -604,6 +606,8 @@ class DataAnalystService:
                                 
                 任务详情:
                 {state.task_detail.to_desc()}
+                
+                {f"执行任务的查询条件为：{state.params}" if state.params is not None else ""}
                 
                 注意：每次执行完任务的最后，一定要调用工具，传入任务id，把任务的执行次数加1
                 """
@@ -674,7 +678,7 @@ class DataAnalystService:
         ])
 
         examples = [
-            ("human", "任务内容：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
+            ("human", "任务目标和具体内容：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
             ("ai",
              "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
         ]
@@ -711,7 +715,7 @@ class DataAnalystService:
                                    {state.task_detail.to_desc()}
                                    
                                    具体事项：
-                                   1.首先给用户展示任务内容
+                                   1.首先给用户展示任务详情
                                    2.调用工具删除任务
                                    
                                    注意:任务id不要透露给用户
@@ -761,7 +765,7 @@ class DataAnalystService:
             ])
 
             examples = [
-                ("human", "任务内容：每日工作效率统计。查询参数：查询昨天的数据，数据加工逻辑：单加一列：工作量除以工作时长为工作效率，数据格式：表格"),
+                ("human", "任务目标和具体内容：每日工作效率统计。查询参数：查询昨天的数据，数据加工逻辑：单加一列：工作量除以工作时长为工作效率，数据格式：表格"),
                 ("ai", "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\", \"data_format\":\"表格\"}"),
             ]
 
@@ -801,7 +805,7 @@ class DataAnalystService:
         # 如果没有使用向量存储，则返回
         if Config.USE_VECTOR_STORE:
             # 存储到向量空间
-            self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务内容：{state.task_detail.target}"], metadatas=[{
+            self.vector_store.add_texts(texts=[f"任务名称：{state.task_name}\n任务目标和具体内容：{state.task_detail.target}"], metadatas=[{
                         "task_id": id,
                         "task_name": state.task_name,
                         "task_detail": entity.task_detail
@@ -1289,7 +1293,7 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
         for m in msgs:
             msg_dict = dict(m)
             if "ai" in msg_dict:
-                return msg_dict["di"]
+                return msg_dict["ai"]
     return None
 
 

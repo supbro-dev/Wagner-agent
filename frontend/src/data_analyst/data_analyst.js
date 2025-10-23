@@ -1,6 +1,6 @@
 import {useEffect, useState} from 'react';
 import {Bubble, Prompts, Sender} from '@ant-design/x';
-import {CopyOutlined, FireOutlined, SmileOutlined, UserOutlined} from '@ant-design/icons';
+import {CopyOutlined, FireOutlined, SmileOutlined, ToolOutlined, UserOutlined} from '@ant-design/icons';
 import {Breadcrumb, Button, Flex, Layout, message, Space, Splitter, Table, theme, Tree, Typography} from "antd";
 import {useLocation} from "react-router-dom";
 import markdownit from 'markdown-it';
@@ -14,12 +14,10 @@ import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
 const aiAvatar = {
     color: '#f56a00',
     backgroundColor: '#fde3cf',
-    width: '55%',
 };
 const userAvatar = {
     color: '#fff',
     backgroundColor: '#87d068',
-    width: '55%',
 };
 
 const md = markdownit({ html: true, breaks: true });
@@ -319,7 +317,7 @@ const Data_analyst = () => {
 
         } else if (confirmType === 'question') {
             clearConfirm()
-            submitQuestionStream(question)
+            setValue(question)
         }
     }
 
@@ -430,7 +428,7 @@ const Data_analyst = () => {
                             items.push(
                                 {
                                     key: taskName,
-                                    type: 'executeTask',
+                                    type: 'advice',
                                     icon: <FireOutlined style={{ color: '#FF4D4F' }} />,
                                     description: '执行任务: ' + taskName,
                                     disabled: false,
@@ -441,15 +439,22 @@ const Data_analyst = () => {
                         items.push({
                             key: '0',
                             type: 'advice',
-                            icon: <SmileOutlined style={{ color: '#FAAD14' }} />,
+                            icon: <ToolOutlined  style={{ color: '#FAAD14' }} />,
                             description: '创建任务：请输入你想创建的任务名称',
                             disabled: false,
                         })
                         items.push({
                             key: '1',
                             type: 'advice',
-                            icon: <SmileOutlined style={{ color: '#FAAD14' }} />,
+                            icon: <ToolOutlined style={{ color: '#FAAD14' }} />,
                             description: '编辑任务：请输入你想编辑的任务名称',
+                            disabled: false,
+                        })
+                        items.push({
+                            key: '2',
+                            type: 'execute',
+                            icon: <ToolOutlined style={{ color: '#FAAD14' }} />,
+                            description: '请介绍一下工具',
                             disabled: false,
                         })
                         setPrompts(items)
@@ -486,7 +491,7 @@ const Data_analyst = () => {
                             is_integrated,
                             task_name,
                         } = data.data.result
-                        if (is_integrated && ["CREATE", "EDIT", "TEST_RUN"].includes(intent_type)) {
+                        if (is_integrated && ["create", "edit", "test_run"].includes(intent_type)) {
                             // 只要任务完整，每次都提示试跑或保存
                             const myTaskName = task_name
                             const options = [
@@ -736,7 +741,7 @@ const Data_analyst = () => {
         const conversation = conversationList[i]
         if (conversation.type === 'ai') {
             const bubble = (
-                <Bubble content={conversation.content} messageRender={renderMarkdown}
+                <Bubble content={conversation.content} messageRender={renderMarkdown} style={{width:"55%"}}
                         avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement}
                         header={"AI数据员"}
                         footer={messageContext => {
@@ -787,7 +792,7 @@ const Data_analyst = () => {
             }
         } else {
             const bubble = (
-                <Bubble content={conversation.content}
+                <Bubble content={conversation.content}  style={{ width: '55%', marginLeft: 'auto' }}
                         avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement} />
             )
 
@@ -830,7 +835,7 @@ const Data_analyst = () => {
                     <Splitter.Panel >
                         <Flex vertical gap="middle">
                             {agentContentBubble}
-                            <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{}:{visibility: 'hidden'}}
+                            <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showNewAiBubble?{width:"55%"}:{visibility: 'hidden'}}
                                     avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                                     header={"AI数据员"}
                             />
@@ -848,7 +853,7 @@ const Data_analyst = () => {
                                 if (info.data.type === 'advice') {
                                     const description = info.data.description
                                     setValue(description.substring(0, description.indexOf("：")+ 1))
-                                } else if (info.data.type === 'executeTask') {
+                                } else if (info.data.type === 'execute') {
                                     submitQuestionStream(info.data.description);
                                 }
                             }}/>

@@ -5,7 +5,7 @@ import {
     Flex,
     Layout,
     message,
-    Modal,
+    Modal, Popover,
     Progress, Space,
     Splitter,
     Table, Tooltip,
@@ -15,8 +15,8 @@ import {
 } from "antd";
 import {Bubble, Prompts, Sender, ThoughtChain} from "@ant-design/x";
 import {
-    CloudUploadOutlined,
-    LikeOutlined, LoadingOutlined, UnorderedListOutlined,
+    CloudUploadOutlined, FileSearchOutlined,
+    LikeOutlined, LoadingOutlined, MenuOutlined, QuestionOutlined, RobotOutlined, UnorderedListOutlined,
     UploadOutlined,
     UserOutlined
 } from "@ant-design/icons";
@@ -79,6 +79,8 @@ const Assistant = () => {
 
     const [showKnowledgeRepositoryBubble, setShowKnowledgeRepositoryBubble] = useState(false);
     const [knowledgeRepositoryContent, setKnowledgeRepositoryContent] = useState('');
+    const [useThinking, setUseThinking] = useState(true);
+    const [promptList, setPromptList] = useState([]);
 
 
 
@@ -123,7 +125,6 @@ const Assistant = () => {
             sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             sessionStorage.setItem('sessionId', sessionId);
         }
-
         setSessionId(sessionId);
     }
 
@@ -177,7 +178,10 @@ const Assistant = () => {
         const firstGetEvent = {current:false}
         const lastMsgId = {current:''}
 
-        doStream(`/agentApi/v1/assistant/askAssistant?question=${encodeURIComponent(question)}&sessionId=${sessionId}&businessKey=${businessKey}`,
+        const theSessionId = sessionStorage.getItem('sessionId') || sessionId;
+
+
+        doStream(`/agentApi/v1/assistant/askAssistant?question=${encodeURIComponent(question)}&sessionId=${theSessionId}&businessKey=${businessKey}&useThinking=${useThinking}`,
             (event) => {
                 if (event.data) {
                     if (!firstGetEvent.current) {
@@ -425,23 +429,83 @@ const Assistant = () => {
         })
     }
 
-    const promptList = [{
-        key: '0',
-        icon: <UploadOutlined style={{ color: '#FAAD14' }} />,
-        description: '上传你的知识库文档(支持多个文件，文件类型支持md,txt)',
-        disabled: false,
-        onClick: () => {
-            showModal()
-        },
-    },{
-        key: '1',
-        icon: <UnorderedListOutlined style={{ color: '#108ee9' }}  />,
-        description: '浏览知识库文件',
-        disabled: false,
-        onClick: () => {
-            showKnowledgeRepository()
+    const renderTitle = (icon, title) => {
+        const hint = (title === '深度思考中')? '点击关闭深度思考': '点击开启深度思考'
+
+        return (
+            <Popover placement="top" title={
+                <div style={{
+                    textAlign: 'center',
+                }}>
+                    {hint}
+                </div>
+            } >
+                <Space align="start">
+                    {icon}
+                    <span>{title}</span>
+                </Space>
+            </Popover>
+        );
+    }
+
+
+
+    const openThinkingOption = ()=> {
+        setPromptList(prevList => {
+            const filteredList = prevList.filter(item => item.key !== 'noThinking');
+
+            const newItem = {
+                key: 'thinking',
+                icon: renderTitle(<RobotOutlined style={{ color: '#FAAD14' }} />, '深度思考中'),
+            };
+
+            // 将新元素添加到列表开头
+            filteredList.unshift(newItem);
+
+
+            return filteredList;
+        });
+    }
+
+    const closeThinkingOption = () => {
+        setPromptList(prevList => {
+            const filteredList = prevList.filter(item => item.key !== 'thinking');
+
+            const newItem = {
+                key: 'noThinking',
+                icon: renderTitle(<MenuOutlined style={{ color: '#FAAD14' }} />, '非深度思考'),
+            };
+
+            // 将新元素添加到列表开头
+            filteredList.unshift(newItem);
+
+            return filteredList;
+        });
+    }
+
+    const clickPromptItem = (item) => {
+        switch (item.data.key) {
+            case 'thinking':
+                setUseThinking(false)
+                closeThinkingOption()
+                break;
+            case 'noThinking':
+                setUseThinking(true)
+                openThinkingOption()
+                break;
+            case 'uploadFiles':
+                showModal()
+                break;
+            case 'showTasks':
+                submitQuestionStream('有哪些任务可以执行？')
+                break;
+            case 'fileManagement':
+                showKnowledgeRepository()
+                break;
+            default:
+                break;
         }
-    }]
+    }
 
     // 初始化数据
     useEffect(() => {
@@ -449,6 +513,24 @@ const Assistant = () => {
         getSessionId()
         // 创建助手Agent
         welcome()
+
+        setPromptList([{
+            key: 'thinking',
+            icon: renderTitle(<RobotOutlined style={{ color: '#FAAD14' }} />, '深度思考中'),
+        },{
+            key: 'showTasks',
+            icon: <FileSearchOutlined style={{ color: '#FAAD14' }} />,
+            description: '有哪些任务可以执行？',
+        },{
+            key: 'uploadFiles',
+            icon: <UploadOutlined style={{ color: '#FAAD14' }} />,
+            description: '上传你的知识库文档(支持多个文件，文件类型支持md,txt)',
+        },{
+            key: 'fileManagement',
+            icon: <UnorderedListOutlined style={{ color: '#108ee9' }}  />,
+            description: '浏览知识库文件',
+        }]
+    )
     }, []);
 
     const agentContentBubble = []
@@ -457,7 +539,7 @@ const Assistant = () => {
         if (conversation.type === 'ai') {
             const buttonAttr = getAddProceduralMemoryAttr(conversation.msgId)
             const bubble = (
-                <Bubble content={conversation.content} messageRender={renderMarkdown}
+                <Bubble content={conversation.content} messageRender={renderMarkdown} style={{width:"55%"}}
                         avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement}
                         header={"AI助理"}
                         footer={(messageContext) => (
@@ -470,7 +552,7 @@ const Assistant = () => {
             agentContentBubble.push(bubble)
         } else {
             const bubble = (
-                <Bubble content={conversation.content}
+                <Bubble content={conversation.content} style={{width:"55%",marginLeft: 'auto'}}
                         avatar={{ icon: <UserOutlined />, style: conversation.avatar }} placement={conversation.placement} />
             )
 
@@ -485,6 +567,36 @@ const Assistant = () => {
             setExpandedKeys(keys);
         },
     };
+
+    const thoughtChainItems = [
+        {
+            key: 'tasks',
+            title: `已有${taskSize}个数据查询任务`,
+            content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{`已有数据查询任务:${taskNames}`}</div>,
+            status: 'success',
+        },
+        {
+            key: 'ragDocs',
+            title: `检索到${ragDocSize}个文档`,
+            content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ragContent}</div>,
+            status: 'success',
+        },
+        {
+            key: 'memories',
+            title: `检索到${memorySize}个相关记忆`,
+            content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{memoryContent}</div>,
+            status: 'success',
+        }
+    ]
+    if (useThinking) {
+        thoughtChainItems.push(
+            {
+                key: 'reasoning',
+                title: '深度思考',
+                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{reasoningContent}</div>,
+                status: 'success',
+            })
+    }
 
     return (
         <Layout >
@@ -504,34 +616,9 @@ const Assistant = () => {
                 <Flex vertical gap="middle">
                     {agentContentBubble}
                     <Card style={{ width: '55%' }} hidden={!showThoughtChain}>
-                        <ThoughtChain items={ [
-                            {
-                                key: 'tasks',
-                                title: `已有${taskSize}个数据查询任务`,
-                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{`已有数据查询任务:${taskNames}`}</div>,
-                                status: 'success',
-                            },
-                            {
-                                key: 'ragDocs',
-                                title: `检索到${ragDocSize}个文档`,
-                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ragContent}</div>,
-                                status: 'success',
-                            },
-                            {
-                                key: 'memories',
-                                title: `检索到${memorySize}个相关记忆`,
-                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{memoryContent}</div>,
-                                status: 'success',
-                            },
-                            {
-                                key: 'reasoning',
-                                title: '深度思考',
-                                content: <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{reasoningContent}</div>,
-                                status: 'success',
-                            }
-                        ]} collapsible={collapsible} />
+                        <ThoughtChain items={thoughtChainItems} collapsible={collapsible} />
                     </Card>
-                    <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showCurrentAiBubble?{}:{visibility: 'hidden'}}
+                    <Bubble loading={bubbleLoading} content={response} messageRender={renderMarkdown} style={showCurrentAiBubble?{width:"55%"}:{visibility: 'hidden'}}
                             avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                             header={"AI数据员"}
                             footer={(messageContext) => (
@@ -543,15 +630,14 @@ const Assistant = () => {
                                 </Space>
                             )}
                     />
-                    <Bubble content={knowledgeRepositoryContent} messageRender={renderKnowledgeRepositoryContent} style={showKnowledgeRepositoryBubble?{}:{visibility: 'hidden'}}
+                    <Bubble content={knowledgeRepositoryContent} messageRender={renderKnowledgeRepositoryContent} style={showKnowledgeRepositoryBubble?{width:"55%"}:{visibility: 'hidden'}}
                             avatar={{ icon: <UserOutlined />, style: aiAvatar }} placement={"start"}
                             header={"AI数据员"}
                     />
                     {contextHolder}
 
-                    <Prompts title="" items={promptList} onItemClick={info => {
-                        info.data.onClick()
-                    }}/>
+                    <Prompts title="常用操作：" items={promptList}
+                             onItemClick={clickPromptItem}/>
                     <Sender
                         loading={loading}
                         value={value}

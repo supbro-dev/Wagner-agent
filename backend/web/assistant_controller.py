@@ -19,7 +19,7 @@ async def welcome():
 
     assistant_service = get_or_create_assistant_service(business_key)
 
-    answer = AnswerVo(content="您好，我是您的AI助手，请问有什么可以帮您？")
+    answer = AnswerVo(content="您好，我是您的AI助理，请问有什么可以帮您？")
 
     return jsonify(success(answer).to_dict())
 
@@ -28,17 +28,19 @@ async def welcome():
 @assistantApi.route('/askAssistant', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
-    sessionId=fields.Str(required=True),
-    question=fields.Str(required=True)
+    sessionId=fields.Str(required=True, ),
+    question=fields.Str(required=True),
+    useThinking=fields.Bool(required=False)
 )
 async def ask_assistant():
     question = g.validated_data['question']
     session_id = g.validated_data['sessionId']
     business_key = g.validated_data['businessKey']
+    use_thinking = g.validated_data.get('useThinking', True)
 
     assistant_service = get_or_create_assistant_service(business_key)
 
-    event_stream = assistant_service.get_event_stream_function(question, session_id)
+    event_stream = assistant_service.get_event_stream_function(question, session_id, use_thinking)
 
     return Response(event_stream(), mimetype='text/event-stream')
 

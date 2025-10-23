@@ -17,7 +17,7 @@ class QueryDataTaskDetail(BaseModel):
 
     def to_desc(self):
         return f"""
-        任务内容:{self.target}\n
+        任务目标和具体内容:{self.target}\n
         查询条件:{self.query_param}\n
         数据格式:{self.data_format}\n
         获取到结果之后的数据加工逻辑:{self.data_operation}\n        
@@ -25,7 +25,7 @@ class QueryDataTaskDetail(BaseModel):
 
     def to_desc_for_llm(self):
         return f"""
-                任务内容:{self.target}\n
+                任务目标和具体内容:{self.target}\n
                 查询条件:{self.query_param}\n
                 获取到结果之后的数据加工逻辑:{self.data_operation}\n        
                 """

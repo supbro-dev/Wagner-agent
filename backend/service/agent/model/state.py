@@ -50,9 +50,14 @@ class DataAnalystState(InputState):
         self.task_name = None
         self.params = None
 
+@dataclass
+class AssistantInputState(InputState):
+    # 是否使用推理模型
+    use_thinking: bool = False
+
 
 @dataclass
-class AssistantState(InputState):
+class AssistantState(AssistantInputState):
 
     # 用户意图
     intent_type: None |str = None
