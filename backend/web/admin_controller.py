@@ -23,7 +23,7 @@ from util.config_util import read_private_config
 from web.data_analyst_controller import get_or_create_data_analyst_service
 from web.vo.result_vo import ResultVo
 
-adminApi = Blueprint('admin', __name__)
+admin_api = Blueprint('admin', __name__)
 #
 # @adminApi.route('/addAllTask2Vector', methods=['GET'])
 # def add_all_task_2_vector():

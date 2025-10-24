@@ -7,10 +7,10 @@ from web.validate.validator import validate_query_params, validate_json_params
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
 
-assistantApi = Blueprint('assistant', __name__)
+assistant_api = Blueprint('assistant', __name__)
 
 
-@assistantApi.route('/welcome', methods=['GET'])
+@assistant_api.route('/welcome', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
 )
@@ -25,7 +25,7 @@ async def welcome():
 
 
 
-@assistantApi.route('/askAssistant', methods=['GET'])
+@assistant_api.route('/askAssistant', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True, ),
@@ -44,7 +44,7 @@ async def ask_assistant():
 
     return Response(event_stream(), mimetype='text/event-stream')
 
-@assistantApi.route('/addProceduralMemory', methods=['POST'])
+@assistant_api.route('/addProceduralMemory', methods=['POST'])
 @validate_json_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
@@ -67,7 +67,7 @@ async def add_procedural_memory():
     return jsonify(success(result).to_dict())
 
 
-@assistantApi.route('/uploadMultiDocs', methods=['POST'])
+@assistant_api.route('/uploadMultiDocs', methods=['POST'])
 async def upload_file():
     """
     处理文件上传的POST请求方法
@@ -97,7 +97,7 @@ async def upload_file():
         result = ResultVo(success=False, result=str(e))
         return jsonify(success(result).to_dict())
 
-@assistantApi.route('/showKnowledgeRepository', methods=['GET'])
+@assistant_api.route('/showKnowledgeRepository', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
 )
@@ -110,7 +110,7 @@ async def show_knowledge_repository():
     result = ResultVo(success=True, result=file_id2_name_list)
     return jsonify(success(result).to_dict())
 
-@assistantApi.route('/deleteKnowledgeRepository', methods=['POST'])
+@assistant_api.route('/deleteKnowledgeRepository', methods=['POST'])
 @validate_json_params(
     businessKey=fields.Str(required=True),
     fileId=fields.Int(required=True),
