@@ -454,7 +454,7 @@ const Data_analyst = () => {
                             key: '2',
                             type: 'execute',
                             icon: <ToolOutlined style={{ color: '#FAAD14' }} />,
-                            description: '请介绍一下工具',
+                            description: '工具介绍',
                             disabled: false,
                         })
                         setPrompts(items)

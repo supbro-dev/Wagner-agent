@@ -367,8 +367,8 @@ class AssistantService:
                         当前日期:{datetime_util.get_current_date()}             
         """
 
-        # 2.推理专用提示词
-        reason_prompt_content = prompts.get_assistant_system_prompt()
+        # 2.执行专用提示词
+        executor_prompt_content = prompts.get_assistant_executor_system_prompt()
 
         # 3.知识库提示词
         knowledge_prompt_content = state.rag_content
@@ -382,7 +382,7 @@ class AssistantService:
         all_messages = state.messages
 
         sys_msg = SystemMessage(content="\n".join(
-            [basic_system_prompt, reason_prompt_content, knowledge_prompt_content, memory_content, task_content, "当需要调用工具执行任务得到数据结果时，概括每次调用的数据结果，以及你的思考过程，最后给出答案。"]))
+            [basic_system_prompt, executor_prompt_content, knowledge_prompt_content, memory_content, task_content]))
 
         if isinstance(all_messages[-1], ToolMessage):
             prompt = ChatPromptTemplate.from_messages([
@@ -420,14 +420,18 @@ class AssistantService:
         # 3.记忆提示词
         memory_content = state.memory_content
 
+        # 4.所有任务信息
+        task_content = state.task_content
+
         all_messages = state.messages
 
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content="\n".join(
-                [basic_system_prompt, rag_content, memory_content])),
+                [basic_system_prompt, rag_content, memory_content, task_content])),
             *all_messages,
         ])
-        chain = prompt | self.__reasoner_llm
+        llm = self.__reasoner_llm if state.use_thinking else self.__llm
+        chain = prompt | llm
         config = RunnableConfig(
             configurable={"timeout": 600000}
         )
@@ -450,6 +454,7 @@ class AssistantService:
             "saved_memory_content": saved_memory_content,
             "msg_id_saved_memories": msg_id_saved_memories,
         }
+
 
     def __get_memory_content(self, memories:list[dict]):
         memory_content = "从历史对话中获取到的相关信息如下:\n"
@@ -476,7 +481,7 @@ class AssistantService:
 """
 
         # 2.推理专用提示词
-        reason_prompt_content = prompts.get_assistant_system_prompt()
+        reason_prompt_content = prompts.get_assistant_reasoner_system_prompt()
 
         # 3.知识库提示词
         knowledge_prompt_content = state.rag_content
@@ -522,7 +527,7 @@ class AssistantService:
             if before_msg_id is not None and messages[i].id == before_msg_id:
                 before_msg_index = i
             # 在指定消息之前找到的第一条人类用户消息
-            if isinstance(messages[i], HumanMessage) and i <= before_msg_index:
+            if isinstance(messages[i], HumanMessage) and (before_msg_index == -1 or i <= before_msg_index):
                 return i, messages[i]
         # 未找到符合条件的人类用户消息
         return -1, None

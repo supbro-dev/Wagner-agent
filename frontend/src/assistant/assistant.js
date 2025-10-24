@@ -74,6 +74,7 @@ const Assistant = () => {
     const [savedMemoryContent, setSavedMemoryContent] = useState("")
     const [reasoningContent, setReasoningContent] = useState('');
     const [msgId2AddProceduralMemoryButtonAttr, setMsgId2AddProceduralMemoryButtonAttr] = useState({});
+    const [msgId2FactMemoryContent, setMsgId2FactMemoryContent] = useState({});
     const [currentAddProceduralMemoryButtonAttr, setCurrentAddProceduralMemoryButtonAttr] = useState({show:false, color:"default", icon:<LikeOutlined />, canClick:true});
     const [expandedKeys, setExpandedKeys] = useState(['reasoning']);
 
@@ -176,6 +177,7 @@ const Assistant = () => {
         }
 
         const firstGetEvent = {current:false}
+        const firstGetToken = {current:false}
         const lastMsgId = {current:''}
 
         const theSessionId = sessionStorage.getItem('sessionId') || sessionId;
@@ -186,12 +188,15 @@ const Assistant = () => {
                 if (event.data) {
                     if (!firstGetEvent.current) {
                         firstGetEvent.current = true
-                        setBubbleLoading(false)
                         setShowThoughtChain(true)
                     }
                     try {
                         const data = JSON.parse(event.data);
                         if (data.token) {
+                            if (!firstGetToken.current) {
+                                firstGetToken.current = true
+                                setBubbleLoading(false)
+                            }
                             setResponse(prev => prev + data.token); // 增量更新
                         }
                         if (data.msgId && data.msgId !== '') {
@@ -224,6 +229,12 @@ const Assistant = () => {
                         // 设置生成记忆内容
                         if (data.savedMemoryContent) {
                             setSavedMemoryContent(data.savedMemoryContent)
+                            setMsgId2FactMemoryContent(prevState => {
+                                return {
+                                    ...prevState,
+                                    [lastMsgId.current]: data.savedMemoryContent
+                                };
+                            })
                         }
 
                     } catch (e) {
@@ -497,6 +508,8 @@ const Assistant = () => {
                 showModal()
                 break;
             case 'showTasks':
+                setUseThinking(false)
+                closeThinkingOption()
                 submitQuestionStream('有哪些任务可以执行？')
                 break;
             case 'fileManagement':
@@ -505,6 +518,10 @@ const Assistant = () => {
             default:
                 break;
         }
+    }
+
+    const getFactMemoryContent = (msgId) => {
+        return msgId2FactMemoryContent[msgId]
     }
 
     // 初始化数据
@@ -544,6 +561,9 @@ const Assistant = () => {
                         header={"AI助理"}
                         footer={(messageContext) => (
                             <Space >
+                                <Tooltip placement="bottomRight" title={getFactMemoryContent(conversation.msgId)}>
+                                    <Button color={getFactMemoryContent(conversation.msgId) ? "gold":"default"} variant="text" size="small" icon={<CloudUploadOutlined  />} disabled={true}/>
+                                </Tooltip>
                                 <Button color={buttonAttr.color} variant="text" size="small" icon={buttonAttr.icon} onClick={buttonAttr.canClick ? () => addProceduralMemory(conversation.msgId): () => {}} />
                             </Space>
                         )}
@@ -624,9 +644,9 @@ const Assistant = () => {
                             footer={(messageContext) => (
                                 <Space >
                                     <Tooltip placement="bottomRight" title={savedMemoryContent}>
-                                        <Button color={savedMemoryContent === "" ? "default":"gold"} variant="text" size="small" icon={<CloudUploadOutlined  />} />
+                                        <Button color={savedMemoryContent === "" ? "default":"gold"} variant="text" size="small" icon={<CloudUploadOutlined  />} disabled={true}/>
                                     </Tooltip>
-                                    <Button color={currentAddProceduralMemoryButtonAttr.color} variant="text" size="small" icon={currentAddProceduralMemoryButtonAttr.icon} onClick={currentAddProceduralMemoryButtonAttr.canClick ? () => addProceduralMemory(currentMsgId, true) : () => {}} />
+                                    <Button disabled={loading} color={currentAddProceduralMemoryButtonAttr.color} variant="text" size="small" icon={currentAddProceduralMemoryButtonAttr.icon} onClick={currentAddProceduralMemoryButtonAttr.canClick ? () => addProceduralMemory(currentMsgId, true) : () => {}} />
                                 </Space>
                             )}
                     />

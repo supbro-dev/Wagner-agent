@@ -2,7 +2,7 @@ from datetime import datetime
 
 from util import datetime_util
 
-ASSISTANT_REASON_PROMPT = """
+ASSISTANT_REASONER_PROMPT = """
 您现在要负责将用户需求转化为可执行的线性操作流程。请严格遵循以下工作原则：
 
 核心任务：
@@ -37,11 +37,25 @@ ASSISTANT_REASON_PROMPT = """
 ④ 异常处理：
    - 当目标不可实现时返回："无法生成有效执行流程"
    - 遇到信息冲突时优先采用最新数据源
-   - 当前日期：{current_date}
 
 执行说明：
 您输出的操作流程将被下游系统严格按顺序执行，每个步骤都将作为独立指令被解析。请确保：
+• 当前日期：{current_date}
 • 指令表述无歧义
+• 参数取值明确具体
+• 步骤间逻辑紧密衔接
+"""
+
+ASSISTANT_EXECUTOR_PROMPT = """
+您现在要负责将分析用户的数据查询需求，检查知识库、记忆中有没有出现过类似场景，参考这些场景，调用数据查询任务（所有数据查询任务的信息已在下面列出），结合适当推理，完成用户需求
+
+异常处理：
+   - 当目标不可实现时返回："无法生成有效执行流程"
+   - 遇到信息冲突时优先采用时间排序最新的数据
+   
+执行说明：
+你所执行的每个步骤需要按顺序执行。请确保：
+• 当前日期：{current_date}
 • 参数取值明确具体
 • 步骤间逻辑紧密衔接
 """
@@ -72,5 +86,8 @@ ASSISTANT_EXTRACT_QUERYING_DATA_PROMPT = """
 ### 示例如下（请注意，示例仅用于展示逻辑，不是实际对话历史）
 """
 
-def get_assistant_system_prompt():
-    return ASSISTANT_REASON_PROMPT.format(current_date=datetime_util.get_current_date())
+def get_assistant_executor_system_prompt():
+    return ASSISTANT_EXECUTOR_PROMPT.format(current_date=datetime_util.get_current_date())
+
+def get_assistant_reasoner_system_prompt():
+    return ASSISTANT_REASONER_PROMPT.format(current_date=datetime_util.get_current_date())
