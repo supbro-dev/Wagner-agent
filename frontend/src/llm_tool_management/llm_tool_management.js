@@ -1,18 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import {Table, Button, Modal, Form, Input, Select, message, Row, Col, Popconfirm} from 'antd';
+import { Table, Button, Modal, Form, Input, Select, message, Row, Col, Popconfirm } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { fetchGet, fetchPost } from '../utils/requestUtils';
 
 const { TextArea } = Input;
 const { Option } = Select;
-const { confirm } = Modal;
 
-const AgentManagement = () => {
+const LLMToolManagement = () => {
   const [messageApi, contextHolder] = message.useMessage();
-  const [filteredAgents, setFilteredAgents] = useState([]);
+  const [tools, setTools] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingAgent, setEditingAgent] = useState(null);
+  const [editingTool, setEditingTool] = useState(null);
   const [form] = Form.useForm();
   const [searchForm] = Form.useForm();
   const [pagination, setPagination] = useState({
@@ -22,8 +21,7 @@ const AgentManagement = () => {
   });
 
   // 获取数据
-  // 修改fetchAgents函数中的参数处理
-  const fetchAgents = async (params = {}) => {
+  const fetchTools = async (params = {}) => {
     setLoading(true);
     const { current = 1, pageSize = 20 } = pagination;
     const searchValues = searchForm.getFieldsValue();
@@ -31,29 +29,27 @@ const AgentManagement = () => {
     const queryParams = new URLSearchParams({
       page: params.page || current,
       pageSize: params.pageSize || pageSize,
-      businessKey: searchValues.businessKey || '',  // 修改字段名
       name: searchValues.name || '',
-      agentType: searchValues.agentType || ''  // 修改字段名
+      toolType: searchValues.toolType || ''
     }).toString();
 
     fetchGet(
-        `/agentApi/v1/agentDef/list?${queryParams}`,
-        (data) => {
-          setFilteredAgents(data.data.list);
-          setPagination({
-            ...pagination,
-            current: data.data.page,
-            total: data.data.total,
-          });
-          setLoading(false);
-        },
-        (error) => {
-          message.error('获取数据失败: ' + error);
-          setLoading(false);
-        }
+      `/agentApi/v1/llmTool/list?${queryParams}`,
+      (data) => {
+        setTools(data.data.list);
+        setPagination({
+          ...pagination,
+          current: data.data.page,
+          total: data.data.total,
+        });
+        setLoading(false);
+      },
+      (error) => {
+        message.error('获取数据失败: ' + error);
+        setLoading(false);
+      }
     );
   };
-
 
   const handleTableChange = (pager) => {
     setPagination({
@@ -61,14 +57,15 @@ const AgentManagement = () => {
       current: pager.current,
       pageSize: pager.pageSize,
     });
-    fetchAgents({
+    fetchTools({
       page: pager.current,
       pageSize: pager.pageSize,
     });
   };
 
   useEffect(() => {
-
+    // 初始化数据
+    fetchTools();
   }, []);
 
   const handleSearch = (values) => {
@@ -76,58 +73,56 @@ const AgentManagement = () => {
       ...pagination,
       current: 1,
     });
-    fetchAgents({ page: 1 });
+    fetchTools({ page: 1 });
   };
 
   const handleAdd = () => {
-    setEditingAgent(null);
+    setEditingTool(null);
     form.resetFields();
     setModalVisible(true);
   };
 
   const handleEdit = (record) => {
-    setEditingAgent(record);
+    setEditingTool(record);
     form.setFieldsValue(record);
     setModalVisible(true);
   };
 
   const handleDelete = (id) => {
-      fetchPost(
-        '/agentApi/v1/agentDef/delete',
-        { agentId: id },
-        (data) => {
-          message.success('删除成功');
-          fetchAgents(); // 重新加载数据
-        },
-        (error) => {
-          // 根据返回的错误格式显示具体错误信息
-          if (error && Array.isArray(error.data) && error.data.length > 0) {
-            messageApi.error(error.data[0]);
-          } else {
-            messageApi.error('删除失败: ' + (error.msg || error));
-          }
+    fetchPost(
+      '/agentApi/v1/llmTool/delete',
+      { toolId: id },
+      (data) => {
+        message.success('删除成功');
+        fetchTools(); // 重新加载数据
+      },
+      (error) => {
+        if (error && Array.isArray(error.data) && error.data.length > 0) {
+          messageApi.error(error.data[0]);
+        } else {
+          messageApi.error('删除失败: ' + (error.msg || error));
         }
-      );
+      }
+    );
   };
 
   const handleModalOk = async () => {
     try {
       const values = await form.validateFields();
-      
-      if (editingAgent) {
+
+      if (editingTool) {
         // 编辑操作
         fetchPost(
-          '/agentApi/v1/agentDef/update',
-          { ...values, agentId: editingAgent.id },
+          '/agentApi/v1/llmTool/update',
+          { ...values, id: editingTool.id },
           (data) => {
             message.success('更新成功');
             setModalVisible(false);
             form.resetFields();
-            setEditingAgent(null);
-            fetchAgents(); // 重新加载数据
+            setEditingTool(null);
+            fetchTools(); // 重新加载数据
           },
           (error) => {
-            // 根据返回的错误格式显示具体错误信息
             if (error && Array.isArray(error.data) && error.data.length > 0) {
               messageApi.error(error.data[0]);
             } else {
@@ -135,20 +130,18 @@ const AgentManagement = () => {
             }
           }
         );
-        return; // 避免执行下面的代码
       } else {
         // 新增操作
         fetchPost(
-          '/agentApi/v1/agentDef/create',
+          '/agentApi/v1/llmTool/create',
           values,
           (data) => {
             message.success('添加成功');
             setModalVisible(false);
             form.resetFields();
-            fetchAgents(); // 重新加载数据
+            fetchTools(); // 重新加载数据
           },
           (error) => {
-            // 根据返回的错误格式显示具体错误信息
             if (Array.isArray(error.data) && error.data.length > 0) {
               messageApi.error(error.data[0]);
             } else {
@@ -156,12 +149,7 @@ const AgentManagement = () => {
             }
           }
         );
-        return; // 避免执行下面的代码
       }
-      
-      setModalVisible(false);
-      form.resetFields();
-      fetchAgents(); // 重新加载数据
     } catch (error) {
       message.error('操作失败: ' + error.message);
     }
@@ -170,31 +158,36 @@ const AgentManagement = () => {
   const handleModalCancel = () => {
     setModalVisible(false);
     form.resetFields();
-    setEditingAgent(null);
+    setEditingTool(null);
   };
 
   const columns = [
     {
-      title: '业务键',
-      dataIndex: 'businessKey',
-      key: 'businessKey',
-    },
-    {
-      title: '名称',
+      title: '工具名称',
       dataIndex: 'name',
       key: 'name',
     },
     {
-      title: '系统提示词',
-      dataIndex: 'systemPrompt',
-      key: 'systemPrompt',
+      title: '工具描述',
+      dataIndex: 'description',
+      key: 'description',
       ellipsis: true,
     },
     {
-      title: '类型',
-      dataIndex: 'agentType',
-      key: 'agentType',
-      render: (text) => (text === 'dataAnalyst' ? '数据员' : '助理'),
+      title: '工具类型',
+      dataIndex: 'toolType',
+      key: 'toolType',
+      render: (text) => (text === 'httpTool' ? 'HTTP工具' : 'MCP'),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'gmtCreate',
+      key: 'gmtCreate',
+    },
+    {
+      title: '修改时间',
+      dataIndex: 'gmtModified',
+      key: 'gmtModified',
     },
     {
       title: '操作',
@@ -211,16 +204,19 @@ const AgentManagement = () => {
             编辑
           </Button>
           <Popconfirm
-              title="请确认"
-              description="请确认要删除这个Agent吗？"
-              okText="是"
-              cancelText="否"
-              onConfirm={() => handleDelete(record.id)}
+            title="请确认"
+            description="请确认要删除这个工具吗？"
+            okText="是"
+            cancelText="否"
+            onConfirm={() => handleDelete(record.id)}
           >
-            <Button danger
-                    icon={<DeleteOutlined />}
-                    size={"small"}
-            >删除</Button>
+            <Button 
+              danger
+              icon={<DeleteOutlined />}
+              size="small"
+            >
+              删除
+            </Button>
           </Popconfirm>
         </span>
       ),
@@ -233,25 +229,15 @@ const AgentManagement = () => {
       <Form form={searchForm} onFinish={handleSearch} layout="inline" style={{ marginBottom: 16 }}>
         <Row gutter={16} style={{ width: '100%' }}>
           <Col span={6}>
-            <Form.Item
-                name="businessKey"
-                label="业务键"
-                rules={[{ required: true, message: '请输入业务键!' }]}
-            >
-              <Input placeholder="请输入业务键" />
+            <Form.Item name="name" label="工具名称">
+              <Input placeholder="请输入工具名称" />
             </Form.Item>
           </Col>
           <Col span={6}>
-            <Form.Item name="name" label="名称">
-              <Input placeholder="请输入名称" />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="agentType"
-                       label="类型">
-              <Select placeholder="请选择类型" allowClear>
-                <Option value="assistant">助理</Option>
-                <Option value="dataAnalyst">数据员</Option>
+            <Form.Item name="toolType" label="工具类型">
+              <Select placeholder="请选择工具类型" allowClear>
+                <Option value="httpTool">HTTP工具</Option>
+                <Option value="mcp">MCP</Option>
               </Select>
             </Form.Item>
           </Col>
@@ -263,12 +249,11 @@ const AgentManagement = () => {
               <Button
                 onClick={() => {
                   searchForm.resetFields();
-
                   setPagination({
                     ...pagination,
                     current: 1,
                   });
-                  fetchAgents({ page: 1 });
+                  fetchTools({ page: 1 });
                 }}
               >
                 重置
@@ -277,19 +262,19 @@ const AgentManagement = () => {
           </Col>
         </Row>
       </Form>
-      
+
       <div style={{ marginBottom: 16 }}>
         <Button 
           type="primary" 
           icon={<PlusOutlined />} 
           onClick={handleAdd}
         >
-          新增Agent
+          新增工具
         </Button>
       </div>
-      
+
       <Table
-        dataSource={filteredAgents}
+        dataSource={tools}
         columns={columns}
         loading={loading}
         rowKey="id"
@@ -302,47 +287,69 @@ const AgentManagement = () => {
       />
 
       <Modal
-          title={editingAgent ? "编辑代理" : "新增代理"}
-          open={modalVisible}
-          onOk={handleModalOk}
-          onCancel={handleModalCancel}
-          width={600}
+        title={editingTool ? "编辑工具" : "新增工具"}
+        open={modalVisible}
+        onOk={handleModalOk}
+        onCancel={handleModalCancel}
+        width={600}
       >
         <Form form={form} layout="vertical">
           {contextHolder}
           <Form.Item
-              name="businessKey"
-              label="业务键"
-              rules={[{ required: true, message: '请输入业务键!' }]}
+            name="name"
+            label="工具名称"
+            rules={[{ required: true, message: '请输入工具名称!' }]}
           >
-            <Input placeholder="请输入业务键" />
+            <Input placeholder="请输入工具名称" />
           </Form.Item>
 
           <Form.Item
-              name="name"
-              label="名称"
-              rules={[{ required: true, message: '请输入名称!' }]}
+            name="description"
+            label="工具描述"
+            rules={[{ required: true, message: '请输入工具描述!' }]}
           >
-            <Input placeholder="请输入名称" />
+            <TextArea rows={4} placeholder="请输入工具描述" />
           </Form.Item>
 
           <Form.Item
-              name="systemPrompt"
-              label="系统提示词"
-              rules={[{ required: true, message: '请输入系统提示词!' }]}
+            name="toolType"
+            label="工具类型"
+            rules={[{ required: true, message: '请选择工具类型!' }]}
           >
-            <TextArea rows={4} placeholder="请输入系统提示词" />
-          </Form.Item>
-
-          <Form.Item
-              name="agentType"
-              label="类型"
-              rules={[{ required: true, message: '请选择类型!' }]}
-          >
-            <Select placeholder="请选择类型">
-              <Option value="assistant">助理</Option>
-              <Option value="dataAnalyst">数据员</Option>
+            <Select placeholder="请选择工具类型">
+              <Option value="httpTool">HTTP工具</Option>
+              <Option value="mcp">MCP</Option>
             </Select>
+          </Form.Item>
+
+          <Form.Item
+            name="content"
+            label="工具内容"
+            rules={[{ required: true, message: '请输入工具内容!' }]}
+          >
+            <TextArea rows={4} placeholder="请输入工具内容" />
+          </Form.Item>
+
+          <Form.Item
+            name="argsDict"
+            label="参数字典"
+            rules={[{ required: true, message: '请输入参数字典!' }]}
+          >
+            <TextArea rows={4} placeholder="请输入参数字典" />
+          </Form.Item>
+
+          <Form.Item
+            name="requestHandleScript"
+            label="请求处理脚本"
+          >
+            <TextArea rows={4} placeholder="请输入请求处理脚本（可选）" />
+          </Form.Item>
+
+          <Form.Item
+            name="responseHandleScript"
+            label="响应处理脚本"
+          >
+            <TextArea rows={4} placeholder="请输入响应处理脚本（可选）" />
           </Form.Item>
         </Form>
       </Modal>
@@ -350,4 +357,4 @@ const AgentManagement = () => {
   );
 };
 
-export default AgentManagement;
+export default LLMToolManagement;

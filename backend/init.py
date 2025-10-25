@@ -24,4 +24,7 @@ def create_app(Config=None):
     from web.agent_def_controller import agent_def_api
     app.register_blueprint(agent_def_api, url_prefix='/agentApi/v1/agentDef')
 
+    from web.llm_tool_controller import llm_tool_api
+    app.register_blueprint(llm_tool_api, url_prefix='/agentApi/v1/llmTool')
+
     return app

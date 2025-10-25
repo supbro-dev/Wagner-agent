@@ -23,7 +23,7 @@ class AgentDefService:
         # 检查是否已存在相同business_key和agent_type的记录
         existing = self.agent_def_dao.find_by_business_key_and_type(business_key, agent_type)
         if existing:
-            raise ValueError(f"Agent definition with business_key '{business_key}' and type '{agent_type}' already exists")
+            raise ValueError(f"业务键为 '{business_key}' 且类型为 '{agent_type}' 的Agent定义已存在")
 
         # 创建新实体
         agent_def = AgentDefEntity()
@@ -36,7 +36,7 @@ class AgentDefService:
         return self.agent_def_dao.save(agent_def)
 
     def update_agent_def(self, agent_id: int, business_key: str = None, name: str = None, 
-                         system_prompt: str = None, agent_type: str = None) -> AgentDefEntity:
+                         system_prompt: str = None, agent_type: str = None):
         """
         更新Agent定义
         
@@ -66,7 +66,7 @@ class AgentDefService:
             agent_def.agent_type = agent_type
 
         # 保存更新
-        return self.agent_def_dao.update(agent_def)
+        self.agent_def_dao.update(agent_def)
 
     def delete_agent_def(self, agent_id: int) -> bool:
         """

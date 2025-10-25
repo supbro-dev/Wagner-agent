@@ -64,7 +64,7 @@ export const fetchPost = (url, data, successHandler, errorHandler) => {
             .then(data => {
                 if (data.code !== 0) {
                     if (errorHandler) {
-                        errorHandler(data.msg);
+                        errorHandler(data);
                     } else {
                         console.error('请求失败:', data.msg);
                     }
@@ -76,14 +76,14 @@ export const fetchPost = (url, data, successHandler, errorHandler) => {
             })
             .catch((err) => {
                 if (errorHandler) {
-                    errorHandler(err.message);
+                    errorHandler(err);
                 } else {
                     console.error('Error:', err);
                 }
             });
     } catch (error) {
         if (errorHandler) {
-            errorHandler(error.message);
+            errorHandler(error);
         } else {
             console.error('请求异常:', error);
         }

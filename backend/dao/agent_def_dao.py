@@ -1,4 +1,4 @@
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
 
 from dao.base_dao import BaseDAO
 from entity.agent_def_entity import AgentDefEntity
@@ -59,7 +59,7 @@ class AgentDefDAO(BaseDAO):
 
         return self.execute_in_session(query)
 
-    def update(self, agent_def: AgentDefEntity) -> AgentDefEntity:
+    def update(self, agent_def: AgentDefEntity):
         """
         更新AgentDef记录
 
@@ -70,12 +70,18 @@ class AgentDefDAO(BaseDAO):
             AgentDefEntity: 更新后的实体
         """
         def query(session):
-            session.merge(agent_def)
+            query = update(AgentDefEntity).where(
+                AgentDefEntity.id == agent_def.id
+            ).values(
+                business_key=agent_def.business_key,
+                agent_type=agent_def.agent_type,
+                name=agent_def.name,
+                system_prompt=agent_def.system_prompt
+            )
+            session.execute(query)
             session.flush()
-            session.refresh(agent_def)
-            return agent_def
 
-        return self.execute_in_session(query)
+        self.execute_in_session(query)
 
     def delete(self, agent_def: AgentDefEntity) -> bool:
         """

@@ -9,6 +9,7 @@ from web.validate.validator import validate_json_params, validate_query_params
 from web.vo.result_vo import ResultVo
 from web.vo.agent_def_vo import AgentDefVO
 from web.vo.page_result_vo import PageResultVO, Page
+from util.datetime_util import format_datatime
 
 # 创建蓝图
 agent_def_api = Blueprint('agent_def', __name__)
@@ -40,11 +41,11 @@ async def create_agent_def():
         return jsonify(failure_with_ex(e).to_dict())
 
 
-@agent_def_api.route('/update', methods=['PUT'])
+@agent_def_api.route('/update', methods=['POST'])
 @validate_json_params(
     agentId=fields.Int(required=True),
     businessKey=fields.Str(required=False),
-    name=fields.Str(required=False),
+    name=fields.Str(required=True),
     systemPrompt=fields.Str(required=False),
     agentType=fields.Str(required=False)
 )
@@ -60,7 +61,7 @@ async def update_agent_def():
         agent_type = g.validated_data.get('agentType')
 
         # 更新Agent定义
-        agent_def = service_container.agent_def_service().update_agent_def(
+        service_container.agent_def_service().update_agent_def(
             agent_id, 
             business_key=business_key, 
             name=name, 
@@ -75,7 +76,7 @@ async def update_agent_def():
         return jsonify(failure_with_ex(e).to_dict())
 
 
-@agent_def_api.route('/delete', methods=['DELETE'])
+@agent_def_api.route('/delete', methods=['POST'])
 @validate_json_params(
     agentId=fields.Int(required=True)
 )
@@ -120,6 +121,8 @@ async def get_agent_def():
             name=agent_def.name,
             system_prompt=agent_def.system_prompt,
             agent_type=agent_def.agent_type,
+            gmt_create=format_datatime(agent_def.gmt_create) if agent_def.gmt_create else None,
+            gmt_modified=format_datatime(agent_def.gmt_modified) if agent_def.gmt_modified else None,
         )
 
         result = ResultVo(success=True, result=agent_vo)
@@ -168,6 +171,8 @@ async def list_agent_defs():
                 name=agent_def.name,
                 system_prompt=agent_def.system_prompt,
                 agent_type=agent_def.agent_type,
+                gmt_create=format_datatime(agent_def.gmt_create) if agent_def.gmt_create else None,
+                gmt_modified=format_datatime(agent_def.gmt_modified) if agent_def.gmt_modified else None,
             )
             agent_vos.append(agent_vo.to_dict())
 
