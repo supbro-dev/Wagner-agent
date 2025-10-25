@@ -1,74 +1,80 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, Select, message, Row, Col } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { fetchGet } from '../utils/requestUtils';
 
 const { TextArea } = Input;
 const { Option } = Select;
 
 const AgentManagement = () => {
-  const [agents, setAgents] = useState([]);
   const [filteredAgents, setFilteredAgents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingAgent, setEditingAgent] = useState(null);
   const [form] = Form.useForm();
   const [searchForm] = Form.useForm();
+  const [pagination, setPagination] = useState({
+    current: 1,
+    pageSize: 20,
+    total: 0,
+  });
 
-  // 模拟获取数据
-  const fetchAgents = async () => {
+  // 获取数据
+  // 修改fetchAgents函数中的参数处理
+  const fetchAgents = async (params = {}) => {
     setLoading(true);
-    try {
-      // 这里应该调用实际的API接口
-      // const response = await fetch('/api/agents');
-      // const data = await response.json();
-      
-      // 模拟数据
-      const mockData = [
-        {
-          id: 1,
-          business_key: 'data_analyst_001',
-          name: '数据分析员1号',
-          system_prompt: '你是一个专业的数据分析师...',
-          agent_type: '数据员'
+    const { current = 1, pageSize = 20 } = pagination;
+    const searchValues = searchForm.getFieldsValue();
+
+    const queryParams = new URLSearchParams({
+      page: params.page || current,
+      pageSize: params.pageSize || pageSize,
+      businessKey: searchValues.businessKey || '',  // 修改字段名
+      name: searchValues.name || '',
+      agentType: searchValues.agentType || ''  // 修改字段名
+    }).toString();
+
+    fetchGet(
+        `/agentApi/v1/agentDef/list?${queryParams}`,
+        (data) => {
+          setFilteredAgents(data.data.list);
+          setPagination({
+            ...pagination,
+            current: data.data.page,
+            total: data.data.total,
+          });
+          setLoading(false);
         },
-        {
-          id: 2,
-          business_key: 'assistant_001',
-          name: '智能助理1号',
-          system_prompt: '你是一个智能助理...',
-          agent_type: '助理'
+        (error) => {
+          message.error('获取数据失败: ' + error);
+          setLoading(false);
         }
-      ];
-      setAgents(mockData);
-      setFilteredAgents(mockData);
-    } catch (error) {
-      message.error('获取数据失败: ' + error.message);
-    } finally {
-      setLoading(false);
-    }
+    );
+  };
+
+
+  const handleTableChange = (pager) => {
+    setPagination({
+      ...pagination,
+      current: pager.current,
+      pageSize: pager.pageSize,
+    });
+    fetchAgents({
+      page: pager.current,
+      pageSize: pager.pageSize,
+    });
   };
 
   useEffect(() => {
-    fetchAgents();
+
   }, []);
 
   const handleSearch = (values) => {
-    const { name, agent_type, business_key } = values;
-    let result = agents;
-
-    if (name) {
-      result = result.filter(agent => agent.name.includes(name));
-    }
-
-    if (agent_type) {
-      result = result.filter(agent => agent.agent_type === agent_type);
-    }
-
-    if (business_key) {
-      result = result.filter(agent => agent.business_key.includes(business_key));
-    }
-
-    setFilteredAgents(result);
+    setPagination({
+      ...pagination,
+      current: 1,
+    });
+    fetchAgents({ page: 1 });
   };
 
   const handleAdd = () => {
@@ -142,8 +148,8 @@ const AgentManagement = () => {
   const columns = [
     {
       title: '业务键',
-      dataIndex: 'business_key',
-      key: 'business_key',
+      dataIndex: 'businessKey',
+      key: 'businessKey',
     },
     {
       title: '名称',
@@ -152,14 +158,14 @@ const AgentManagement = () => {
     },
     {
       title: '系统提示词',
-      dataIndex: 'system_prompt',
-      key: 'system_prompt',
+      dataIndex: 'systemPrompt',
+      key: 'systemPrompt',
       ellipsis: true,
     },
     {
       title: '类型',
-      dataIndex: 'agent_type',
-      key: 'agent_type',
+      dataIndex: 'agentType',
+      key: 'agentType',
       render: (text) => (text === '数据员' ? '数据员' : '助理'),
     },
     {
@@ -195,12 +201,22 @@ const AgentManagement = () => {
       <Form form={searchForm} onFinish={handleSearch} layout="inline" style={{ marginBottom: 16 }}>
         <Row gutter={16} style={{ width: '100%' }}>
           <Col span={6}>
+            <Form.Item
+                name="businessKey"
+                label="业务键"
+                rules={[{ required: true, message: '请输入业务键!' }]}
+            >
+              <Input placeholder="请输入业务键" />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
             <Form.Item name="name" label="名称">
               <Input placeholder="请输入名称" />
             </Form.Item>
           </Col>
           <Col span={6}>
-            <Form.Item name="agent_type" label="类型">
+            <Form.Item name="agentType"
+                       label="类型">
               <Select placeholder="请选择类型" allowClear>
                 <Option value="数据员">数据员</Option>
                 <Option value="助理">助理</Option>
@@ -208,19 +224,19 @@ const AgentManagement = () => {
             </Form.Item>
           </Col>
           <Col span={6}>
-            <Form.Item name="business_key" label="业务键">
-              <Input placeholder="请输入业务键" />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
             <Form.Item>
               <Button type="primary" htmlType="submit" style={{ marginRight: 8 }}>
                 查询
               </Button>
-              <Button 
+              <Button
                 onClick={() => {
                   searchForm.resetFields();
-                  setFilteredAgents(agents);
+
+                  setPagination({
+                    ...pagination,
+                    current: 1,
+                  });
+                  fetchAgents({ page: 1 });
                 }}
               >
                 重置
@@ -245,45 +261,50 @@ const AgentManagement = () => {
         columns={columns}
         loading={loading}
         rowKey="id"
-        pagination={{ pageSize: 10 }}
+        pagination={{
+          ...pagination,
+          showSizeChanger: true,
+          pageSizeOptions: ['10', '20', '50'],
+        }}
+        onChange={handleTableChange}
       />
 
       <Modal
-        title={editingAgent ? "编辑代理" : "新增代理"}
-        open={modalVisible}
-        onOk={handleModalOk}
-        onCancel={handleModalCancel}
-        width={600}
+          title={editingAgent ? "编辑代理" : "新增代理"}
+          open={modalVisible}
+          onOk={handleModalOk}
+          onCancel={handleModalCancel}
+          width={600}
       >
         <Form form={form} layout="vertical">
           <Form.Item
-            name="business_key"
-            label="业务键"
-            rules={[{ required: true, message: '请输入业务键!' }]}
+              name="businessKey"
+              label="业务键"
+              rules={[{ required: true, message: '请输入业务键!' }]}
           >
             <Input placeholder="请输入业务键" />
           </Form.Item>
-          
+
           <Form.Item
-            name="name"
-            label="名称"
-            rules={[{ required: true, message: '请输入名称!' }]}
+              name="name"
+              label="名称"
+              rules={[{ required: true, message: '请输入名称!' }]}
           >
             <Input placeholder="请输入名称" />
           </Form.Item>
-          
+
           <Form.Item
-            name="system_prompt"
-            label="系统提示词"
-            rules={[{ required: true, message: '请输入系统提示词!' }]}
+              name="systemPrompt"
+              label="系统提示词"
+              rules={[{ required: true, message: '请输入系统提示词!' }]}
           >
             <TextArea rows={4} placeholder="请输入系统提示词" />
           </Form.Item>
-          
+
           <Form.Item
-            name="agent_type"
-            label="类型"
-            rules={[{ required: true, message: '请选择类型!' }]}
+              name="agentType"
+              label="类型"
+              rules={[{ required: true, message: '请选择类型!' }]}
           >
             <Select placeholder="请选择类型">
               <Option value="数据员">数据员</Option>

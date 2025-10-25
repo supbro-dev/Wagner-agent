@@ -22,6 +22,6 @@ def create_app(Config=None):
     app.register_blueprint(json_file_api, url_prefix='/api/v1/mocks')
 
     from web.agent_def_controller import agent_def_api
-    app.register_blueprint(agent_def_api, url_prefix='/api/agent-def')
+    app.register_blueprint(agent_def_api, url_prefix='/agentApi/v1/agentDef')
 
     return app

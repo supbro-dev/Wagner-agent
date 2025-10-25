@@ -1,6 +1,5 @@
-from flask import Blueprint, request, jsonify
 from marshmallow import fields
-from quart import g
+from quart import g, Blueprint, jsonify
 
 from container import service_container
 from model.response import success, failure_with_ex
@@ -8,6 +7,8 @@ from service.agent.agent_def_service import AgentDefService
 from dao.agent_def_dao import AgentDefDAO
 from web.validate.validator import validate_json_params, validate_query_params
 from web.vo.result_vo import ResultVo
+from web.vo.agent_def_vo import AgentDefVO
+from web.vo.page_result_vo import PageResultVO, Page
 
 # 创建蓝图
 agent_def_api = Blueprint('agent_def', __name__)
@@ -19,7 +20,7 @@ agent_def_api = Blueprint('agent_def', __name__)
     systemPrompt=fields.Str(required=False),
     agentType=fields.Str(required=True)
 )
-def create_agent_def():
+async def create_agent_def():
     """
     创建新的Agent定义
     """
@@ -47,7 +48,7 @@ def create_agent_def():
     systemPrompt=fields.Str(required=False),
     agentType=fields.Str(required=False)
 )
-def update_agent_def():
+async def update_agent_def():
     """
     更新Agent定义
     """
@@ -78,7 +79,7 @@ def update_agent_def():
 @validate_json_params(
     agentId=fields.Int(required=True)
 )
-def delete_agent_def():
+async def delete_agent_def():
     """
     删除Agent定义
     """
@@ -100,7 +101,7 @@ def delete_agent_def():
 @validate_query_params(
     agentId=fields.Int(required=True)
 )
-def get_agent_def():
+async def get_agent_def():
     """
     根据ID获取Agent定义
     """
@@ -112,24 +113,22 @@ def get_agent_def():
             result = ResultVo(success=False, result="未找到对应记录")
             return jsonify(success(result).to_dict())
 
-        # 转换为字典
-        data = {
-            'id': agent_def.id,
-            'business_key': agent_def.business_key,
-            'name': agent_def.name,
-            'system_prompt': agent_def.system_prompt,
-            'agent_type': agent_def.agent_type,
-            'gmt_create': agent_def.gmt_create.isoformat() if agent_def.gmt_create else None,
-            'gmt_modified': agent_def.gmt_modified.isoformat() if agent_def.gmt_modified else None
-        }
+        # 转换为AgentVO对象
+        agent_vo = AgentDefVO(
+            id=agent_def.id,
+            business_key=agent_def.business_key,
+            name=agent_def.name,
+            system_prompt=agent_def.system_prompt,
+            agent_type=agent_def.agent_type,
+        )
 
-        result = ResultVo(success=True, result=data)
+        result = ResultVo(success=True, result=agent_vo)
         return jsonify(success(result).to_dict())
     except Exception as e:
         return jsonify(failure_with_ex(e).to_dict())
 
 
-@agent_def_api.route('', methods=['GET'])
+@agent_def_api.route('list', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     name=fields.Str(required=False),
@@ -137,7 +136,7 @@ def get_agent_def():
     page=fields.Int(required=False, missing=1),
     pageSize=fields.Int(required=False, missing=20)
 )
-def list_agent_defs():
+async def list_agent_defs():
     """
     列出符合条件的Agent定义
     支持根据business_key、name、agent_type查询
@@ -148,7 +147,7 @@ def list_agent_defs():
         name = g.validated_data['name']
         agent_type = g.validated_data['agentType']
         page = g.validated_data['page']
-        page_size = g.validated_data.get('pageSize', default=20)
+        page_size = g.validated_data['pageSize']
         page_size = min(page_size, 100)  # 限制最大页面大小
 
         # 查询数据
@@ -160,29 +159,29 @@ def list_agent_defs():
             page_size=page_size
         )
 
-        # 转换为字典列表
-        data_list = []
+        # 转换为AgentVO列表
+        agent_vos = []
         for agent_def in agent_defs:
-            data_list.append({
-                'id': agent_def.id,
-                'business_key': agent_def.business_key,
-                'name': agent_def.name,
-                'system_prompt': agent_def.system_prompt,
-                'agent_type': agent_def.agent_type,
-                'gmt_create': agent_def.gmt_create.isoformat() if agent_def.gmt_create else None,
-                'gmt_modified': agent_def.gmt_modified.isoformat() if agent_def.gmt_modified else None
-            })
+            agent_vo = AgentDefVO(
+                id=agent_def.id,
+                business_key=agent_def.business_key,
+                name=agent_def.name,
+                system_prompt=agent_def.system_prompt,
+                agent_type=agent_def.agent_type,
+            )
+            agent_vos.append(agent_vo.to_dict())
 
-        data = {
-            'list': data_list,
-            'pagination': {
-                'page': page,
-                'page_size': page_size,
-                'total': len(data_list)  # 注意：实际项目中应该返回总记录数
-            }
-        }
+        # 使用PageResultVO封装分页数据
+        page_result = PageResultVO[AgentDefVO](
+            success=True,
+            list=agent_vos,
+            pagination=Page(
+                page=page,
+                page_size=page_size,
+                total=len(agent_vos)  # 注意：实际项目中应该返回总记录数
+            )
+        )
 
-        result = ResultVo(success=True, result=data)
-        return jsonify(success(result).to_dict())
+        return jsonify(success(page_result).to_dict())
     except Exception as e:
         return jsonify(failure_with_ex(e).to_dict())
