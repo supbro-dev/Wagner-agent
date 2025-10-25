@@ -20,6 +20,21 @@ const AgentManagement = () => {
     pageSize: 20,
     total: 0,
   });
+  // 添加LLM工具列表状态
+  const [llmTools, setLlmTools] = useState([]);
+
+  // 获取LLM工具列表
+  const fetchLlmTools = async () => {
+    fetchGet(
+      '/agentApi/v1/llmTool/list?page=1&pageSize=1000',
+      (data) => {
+        setLlmTools(data.data.list.map(o => ({value:o.id, label:`${o.name}(${o.description})`})));
+      },
+      (error) => {
+        messageApi.error('获取LLM工具列表失败: ' + error);
+      }
+    );
+  };
 
   // 获取数据
   // 修改fetchAgents函数中的参数处理
@@ -68,7 +83,7 @@ const AgentManagement = () => {
   };
 
   useEffect(() => {
-
+    fetchLlmTools(); // 获取LLM工具列表
   }, []);
 
   const handleSearch = (values) => {
@@ -87,7 +102,11 @@ const AgentManagement = () => {
 
   const handleEdit = (record) => {
     setEditingAgent(record);
-    form.setFieldsValue(record);
+    // 设置表单字段值，包括toolIds
+    form.setFieldsValue({
+      ...record,
+      toolIds: record.toolIds || [] // 确保toolIds是一个数组
+    });
     setModalVisible(true);
   };
 
@@ -306,6 +325,8 @@ const AgentManagement = () => {
           open={modalVisible}
           onOk={handleModalOk}
           onCancel={handleModalCancel}
+          okText="保存"
+          cancelText="取消"
           width={600}
       >
         <Form form={form} layout="vertical">
@@ -342,6 +363,26 @@ const AgentManagement = () => {
             <Select placeholder="请选择类型">
               <Option value="assistant">助理</Option>
               <Option value="dataAnalyst">数据员</Option>
+            </Select>
+          </Form.Item>
+
+          <Form.Item
+              name="toolIds"
+              label="LLM工具"
+          >
+            <Select 
+              mode="multiple" 
+              placeholder="请选择LLM工具"
+              optionFilterProp="children"
+              filterOption={(input, option) => 
+                option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+              }
+            >
+              {llmTools.map(tool => (
+                <Option key={tool.value} value={tool.value}>
+                  {tool.label}
+                </Option>
+              ))}
             </Select>
           </Form.Item>
         </Form>

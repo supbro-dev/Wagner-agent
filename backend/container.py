@@ -6,6 +6,7 @@ from dao.agent_def_dao import AgentDefDAO
 from dao.llm_tool_dao import LLMToolDAO
 from dao.query_data_task_dao import QueryDataTaskDAO
 from dao.rag_file_dao import RagFileDAO
+from dao.agent_llm_tool_dao import AgentLLMToolDAO
 from service.agent.agent_def_service import AgentDefService
 from service.tool.llm_tool_service import LLMToolService
 
@@ -43,6 +44,11 @@ class DaoContainer(containers.DeclarativeContainer):
         engine=engine
     )
 
+    agent_llm_tool_dao = providers.Singleton(
+        AgentLLMToolDAO,
+        engine=engine
+    )
+
 
 class ServiceContainer(containers.DeclarativeContainer):
     # DAO容器依赖
@@ -51,7 +57,8 @@ class ServiceContainer(containers.DeclarativeContainer):
     # 服务层提供者
     agent_def_service = providers.Singleton(
         AgentDefService,
-        agent_def_dao=dao_container.agent_def_dao
+        agent_def_dao=dao_container.agent_def_dao,
+        agent_llm_tool_dao=dao_container.agent_llm_tool_dao
     )
 
     llm_tool_service = providers.Singleton(

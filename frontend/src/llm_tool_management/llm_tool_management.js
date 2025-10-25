@@ -45,7 +45,7 @@ const LLMToolManagement = () => {
         setLoading(false);
       },
       (error) => {
-        message.error('获取数据失败: ' + error);
+        messageApi.error('获取数据失败: ' + error);
         setLoading(false);
       }
     );
@@ -93,7 +93,7 @@ const LLMToolManagement = () => {
       '/agentApi/v1/llmTool/delete',
       { toolId: id },
       (data) => {
-        message.success('删除成功');
+        messageApi.success('删除成功');
         fetchTools(); // 重新加载数据
       },
       (error) => {
@@ -114,9 +114,13 @@ const LLMToolManagement = () => {
         // 编辑操作
         fetchPost(
           '/agentApi/v1/llmTool/update',
-          { ...values, id: editingTool.id },
+          { ...values, toolId: editingTool.id },
           (data) => {
-            message.success('更新成功');
+            if (values.toolType === "mcp") {
+              messageApi.success("MCP SERVER包含以下工具:" + data.data.result);
+            } else {
+              messageApi.success(data.data.result);
+            }
             setModalVisible(false);
             form.resetFields();
             setEditingTool(null);
@@ -136,7 +140,11 @@ const LLMToolManagement = () => {
           '/agentApi/v1/llmTool/create',
           values,
           (data) => {
-            message.success('添加成功');
+            if (values.toolType === "mcp") {
+              messageApi.success("MCP SERVER包含以下工具:" + data.data.result);
+            } else {
+              messageApi.success(data.data.result);
+            }
             setModalVisible(false);
             form.resetFields();
             fetchTools(); // 重新加载数据
@@ -151,7 +159,7 @@ const LLMToolManagement = () => {
         );
       }
     } catch (error) {
-      message.error('操作失败: ' + error.message);
+      messageApi.error('操作失败: ' + error.message);
     }
   };
 
@@ -291,6 +299,8 @@ const LLMToolManagement = () => {
         open={modalVisible}
         onOk={handleModalOk}
         onCancel={handleModalCancel}
+        okText="保存"
+        cancelText="取消"
         width={600}
       >
         <Form form={form} layout="vertical">

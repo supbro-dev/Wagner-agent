@@ -10,6 +10,7 @@ class AgentDefVO(BaseModel):
     agent_type: str
     gmt_create: str | None = None
     gmt_modified: str | None = None
+    tool_ids: list[int] | None = None
 
     def to_json(self):
         return self.model_dump_json(by_alias=True)

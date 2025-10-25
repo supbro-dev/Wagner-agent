@@ -2,9 +2,11 @@ from marshmallow import fields
 from quart import g, Blueprint, jsonify
 
 from container import service_container
+from entity.llm_tool_entity import LLMToolType
 from model.response import success, failure_with_ex
 from service.tool.llm_tool_service import LLMToolService
 from dao.llm_tool_dao import LLMToolDAO
+from service.tool.mcp_client_tool import create_mcp_client_tools
 from web.validate.validator import validate_json_params, validate_query_params
 from web.vo.result_vo import ResultVo
 from web.vo.llm_tool_vo import LLMToolVO
@@ -41,10 +43,14 @@ async def create_llm_tool():
         llm_tool = service_container.llm_tool_service().create_llm_tool(
             name, description, args_dict, tool_type, content, 
             request_handle_script, response_handle_script)
-
-        result = ResultVo(success=True, result="保存成功")
-
-        return jsonify(success(result).to_dict())
+        if llm_tool.tool_type == LLMToolType.MCP:
+            tools = await create_mcp_client_tools([llm_tool])
+            tool_desc_list = [f"工具名称：{tool.name}\n描述：{tool.description}" for tool in tools]
+            result = ResultVo(success=True, result=tool_desc_list)
+            return jsonify(success(result).to_dict())
+        else:
+            result = ResultVo(success=True, result="保存成功")
+            return jsonify(success(result).to_dict())
     except Exception as e:
         return jsonify(failure_with_ex(e).to_dict())
 
@@ -57,8 +63,8 @@ async def create_llm_tool():
     argsDict=fields.Str(required=False),
     toolType=fields.Str(required=False),
     content=fields.Str(required=False),
-    requestHandleScript=fields.Str(required=False),
-    responseHandleScript=fields.Str(required=False)
+    requestHandleScript=fields.Str(required=False, allow_none=True),
+    responseHandleScript=fields.Str(required=False, allow_none=True)
 )
 async def update_llm_tool():
     """
@@ -86,9 +92,16 @@ async def update_llm_tool():
             response_handle_script=response_handle_script
         )
 
-        result = ResultVo(success=True, result="更新成功")
+        tool_entity = service_container.llm_tool_service().get_llm_tool_by_id(tool_id)
 
-        return jsonify(success(result).to_dict())
+        if tool_entity is not None and tool_type == LLMToolType.MCP:
+            tools = await create_mcp_client_tools([tool_entity])
+            tool_desc_list = [f"工具名称：{tool.name}\n描述：{tool.description}" for tool in tools]
+            result = ResultVo(success=True, result=tool_desc_list)
+            return jsonify(success(result).to_dict())
+        else:
+            result = ResultVo(success=True, result="更新成功")
+            return jsonify(success(result).to_dict())
     except Exception as e:
         return jsonify(failure_with_ex(e).to_dict())
 
