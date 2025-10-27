@@ -1,3 +1,4 @@
+import logging
 from functools import wraps
 from quart import request, g
 from flask_marshmallow import Schema
@@ -28,7 +29,8 @@ def validate_request_params(param_source='query', **field_definitions):
                     g.validated_data = validated_data
                     return await func(*args, **kwargs)
                 except ValidationError as err:
-                    return failure_with_ex(err)
+                    logging.error("数据校验失败", err)
+                    raise err
 
             return async_wrapper
         else:
@@ -50,7 +52,8 @@ def validate_request_params(param_source='query', **field_definitions):
                     g.validated_data = validated_data
                     return func(*args, **kwargs)
                 except ValidationError as err:
-                    return failure_with_ex(err)
+                    logging.error("数据校验失败", err)
+                    raise err
 
             return sync_wrapper
 

@@ -10,9 +10,9 @@ from web.validate.validator import validate_query_params, validate_json_params
 from web.vo.answer_vo import AnswerVo
 from web.vo.result_vo import ResultVo
 
-dataAnalystApi = Blueprint('dataAnalyst', __name__)
+data_analyst_api = Blueprint('dataAnalyst', __name__)
 
-@dataAnalystApi.route('/welcome', methods=['GET'])
+@data_analyst_api.route('/welcome', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True)
@@ -29,7 +29,7 @@ async def welcome():
 
 
 
-@dataAnalystApi.route('/question', methods=['POST'])
+@data_analyst_api.route('/question', methods=['POST'])
 @validate_json_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
@@ -48,7 +48,7 @@ def handle_question():
     return jsonify(success(answer).to_dict())
 
 # 中断取消专用
-@dataAnalystApi.route('/resumeInterrupt', methods=['POST'])
+@data_analyst_api.route('/resumeInterrupt', methods=['POST'])
 @validate_json_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
@@ -66,7 +66,7 @@ def resume_interrupt():
     answer = AnswerVo(content=content, interrupt=interrupt)
     return jsonify(success(answer).to_dict())
 
-@dataAnalystApi.route('/resumeInterruptStream', methods=['GET'])
+@data_analyst_api.route('/resumeInterruptStream', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
@@ -83,7 +83,7 @@ async def resume_interrupt_stream():
 
     return Response(event_stream(), mimetype='text/event-stream')
 
-@dataAnalystApi.route('/getStateProperties', methods=['GET'])
+@data_analyst_api.route('/getStateProperties', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),
@@ -101,7 +101,7 @@ def get_state_properties():
     return jsonify(success(result).to_dict())
 
 
-@dataAnalystApi.route('/getFrequentlyAndUsuallyExecuteTasks', methods=['GET'])
+@data_analyst_api.route('/getFrequentlyAndUsuallyExecuteTasks', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
 )
@@ -116,7 +116,7 @@ def get_frequently_and_usually_execute_tasks():
     return jsonify(success(result).to_dict())
 
 # 流式路由
-@dataAnalystApi.route('/questionStream', methods=['GET'])
+@data_analyst_api.route('/questionStream', methods=['GET'])
 @validate_query_params(
     businessKey=fields.Str(required=True),
     sessionId=fields.Str(required=True),

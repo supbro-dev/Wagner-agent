@@ -6,10 +6,12 @@ from dao.agent_def_dao import AgentDefDAO
 from dao.llm_tool_dao import LLMToolDAO
 from dao.query_data_task_dao import QueryDataTaskDAO
 from dao.rag_file_dao import RagFileDAO
+from dao.agent_llm_tool_dao import AgentLLMToolDAO
+from service.agent.agent_def_service import AgentDefService
+from service.tool.llm_tool_service import LLMToolService
 
 
 class DaoContainer(containers.DeclarativeContainer):
-    """核心依赖容器"""
     # 配置项
     config = providers.Configuration()
 
@@ -42,8 +44,29 @@ class DaoContainer(containers.DeclarativeContainer):
         engine=engine
     )
 
+    agent_llm_tool_dao = providers.Singleton(
+        AgentLLMToolDAO,
+        engine=engine
+    )
 
+
+class ServiceContainer(containers.DeclarativeContainer):
+    # DAO容器依赖
+    dao_container = providers.Container(DaoContainer)
+
+    # 服务层提供者
+    agent_def_service = providers.Singleton(
+        AgentDefService,
+        agent_def_dao=dao_container.agent_def_dao,
+        agent_llm_tool_dao=dao_container.agent_llm_tool_dao
+    )
+
+    llm_tool_service = providers.Singleton(
+        LLMToolService,
+        llm_tool_dao=dao_container.llm_tool_dao
+    )
 
 
 # 全局容器实例
 dao_container = DaoContainer()
+service_container = ServiceContainer()

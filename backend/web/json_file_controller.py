@@ -7,13 +7,13 @@ import os
 from web.vo.result_vo import ResultVo
 
 # 创建蓝图
-jsonFileApi = Blueprint('jsonFileApi', __name__)
+json_file_api = Blueprint('jsonFileApi', __name__)
 
 # 初始化服务，使用项目目录下的mock文件夹
 json_file_service = JsonFileService(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'mock'))
 
 
-@jsonFileApi.route('/<filename>', methods=['GET'])
+@json_file_api.route('/<filename>', methods=['GET'])
 async def get_file_content(filename):
     """
     获取指定JSON文件的内容

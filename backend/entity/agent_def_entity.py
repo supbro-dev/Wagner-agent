@@ -18,3 +18,6 @@ class AgentDefEntity(Base):
     name = Column(String(256), nullable=False, comment='名称')
     system_prompt = Column(Text, nullable=False, comment='系统提示词')
     agent_type = Column(String(32), nullable=False, comment='类型(数据员/助理)')
+
+    def __repr__(self):
+        return f"<AgentDefEntity(id={self.id}, business_key='{self.business_key}', name='{self.name}', agent_type='{self.agent_type}')>"
