@@ -1,4 +1,4 @@
-# WagnerAgent: 面向业务人员的智能数据问答与分析多Agent系统
+# WagnerAgent: 面向业务的智能数据分析多Agent系统
 ![](https://img.shields.io/badge/AI-Agent-orange)
 ![](https://img.shields.io/badge/License-Apache2.0-blue)
 ![](https://img.shields.io/badge/Python-3.10+-green)
