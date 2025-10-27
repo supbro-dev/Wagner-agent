@@ -6,7 +6,7 @@ Base = declarative_base()
 
 class AgentDefType:
     ASSISTANT = "assistant"
-    DATA_ANALYST = "dataAnalyst"
+    DATA_CLERK = "dataClerk"
 
 class AgentDefEntity(Base):
     __tablename__ = 'agent_def'

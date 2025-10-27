@@ -36,7 +36,7 @@ from dao.rag_file_dao import RagFileDAO
 from entity.agent_def_entity import AgentDefType
 from entity.rag_file_entity import RagFileEntity
 from model.query_data_task_detail import QueryDataTaskDetail
-from service.agent.data_analyst_service import get_or_create_data_analyst_service
+from service.agent.data_clerk_service import get_or_create_data_clerk_service
 from service.agent.model.assistant_output_schema import DEFAULT, QUERY_DATA, IntentSchema
 from service.agent.model.state import AssistantState, AssistantInputState
 from service.agent.model.state import InputState
@@ -109,9 +109,9 @@ class AssistantService:
         # 初始化记忆(mem0)
         self.__memory = self.__create_memory()
         # 创建数据员子图调用工具
-        self.__data_analyst_tool = [ask_data_analyst]
+        self.__data_clerk_tool = [ask_data_clerk]
         # 初始化langGraph
-        self.__data_analyst_graph = get_or_create_data_analyst_service(business_key).graph
+        self.__data_clerk_graph = get_or_create_data_clerk_service(business_key).graph
         self.__graph = self.__create_graph(agent_def.name)
         # 创建rag专用向量存储
         self.__vector_store = self.__create_vector_store()
@@ -394,7 +394,7 @@ class AssistantService:
                 sys_msg, all_messages[-1]
             ])
 
-        chain = prompt | self.__llm.bind_tools(self.__data_analyst_tool)
+        chain = prompt | self.__llm.bind_tools(self.__data_clerk_tool)
 
         config = RunnableConfig(
             configurable={"timeout": 600000}
@@ -597,7 +597,7 @@ class AssistantService:
                 """),
                 *all_messages,
             ])
-            chain = prompt | self.__llm.bind_tools(self.__data_analyst_tool)
+            chain = prompt | self.__llm.bind_tools(self.__data_clerk_tool)
         else:
             prompt = ChatPromptTemplate.from_messages([
                 SystemMessage(content=f"""
@@ -614,7 +614,7 @@ class AssistantService:
                             """),
                 all_messages[-1], # 取最后一条直接执行命令
             ])
-            chain = prompt | self.__llm.bind_tools(self.__data_analyst_tool)
+            chain = prompt | self.__llm.bind_tools(self.__data_clerk_tool)
         response = await chain.ainvoke({})
 
         saved_memories = []
@@ -644,7 +644,7 @@ class AssistantService:
         else:
             return "default"
 
-    def __need_invoke_tool(self, state: AssistantState) -> Literal["data_analyst_tool", END]:
+    def __need_invoke_tool(self, state: AssistantState) -> Literal["data_clerk_tool", END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -654,7 +654,7 @@ class AssistantService:
         if not last_message.tool_calls:
             return END
         else:
-            return "data_analyst_tool"
+            return "data_clerk_tool"
 
     def __after_invoke_tool(self, state: AssistantState) -> Literal["chat", "executor"]:
         if state.use_thinking:
@@ -751,7 +751,7 @@ class AssistantService:
         builder.add_node("default", self.__default)
         builder.add_node("chat", self.__chat)
         builder.add_node("executor", self.__executor)
-        builder.add_node("data_analyst_tool", ToolNode(self.__data_analyst_tool))
+        builder.add_node("data_clerk_tool", ToolNode(self.__data_clerk_tool))
 
         builder.add_edge(START, "get_all_tasks")
         builder.add_edge("get_all_tasks", "get_doc_content_from_vector")
@@ -762,7 +762,7 @@ class AssistantService:
         builder.add_edge("default", END)
         builder.add_conditional_edges("executor", self.__need_invoke_tool)
         builder.add_conditional_edges("chat", self.__need_invoke_tool)
-        builder.add_conditional_edges("data_analyst_tool", self.__after_invoke_tool)
+        builder.add_conditional_edges("data_clerk_tool", self.__after_invoke_tool)
 
         # 记忆功能
         if Config.MESSAGE_MEMORY_USE == "local":
@@ -959,7 +959,7 @@ class AssistantService:
 
 
 @tool
-async def ask_data_analyst(business_key:str, session_id:str, task_name:str, params:str = "") -> str:
+async def ask_data_clerk(business_key:str, session_id:str, task_name:str, params:str = "") -> str:
     """
     根据业务键和任务名，执行任务并返回任务结果
 
@@ -969,9 +969,9 @@ async def ask_data_analyst(business_key:str, session_id:str, task_name:str, para
     task_name：任务名
     params: 执行任务时的查询条件（可以不传任何查询条件）
     """
-    data_analyst_service = get_or_create_data_analyst_service(business_key)
+    data_clerk_service = get_or_create_data_clerk_service(business_key)
     query = f"执行任务:{task_name}" if params == "" else f"执行任务:{task_name}，查询条件:{params}"
-    content = await data_analyst_service.question(query, session_id)
+    content = await data_clerk_service.question(query, session_id)
 
     return content
 

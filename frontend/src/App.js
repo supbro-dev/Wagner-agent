@@ -1,6 +1,6 @@
 import React from 'react';
 
-import DataAnalyst from "./data_analyst/data_analyst";
+import DataClerk from "./data_clerk/data_clerk";
 import Assistant from "./assistant/assistant";
 import AgentManagement from "./agent_management/agent_management";
 import LLMToolManagement from "./llm_tool_management/llm_tool_management";
@@ -11,7 +11,7 @@ function App() {
     return (
         <BrowserRouter basename="/web">
             <Routes>
-                <Route path="/dataAnalyst" element={<DataAnalyst />} />
+                <Route path="/dataClerk" element={<DataClerk />} />
                 <Route path="/assistant" element={<Assistant />} />
                 <Route path="/agentManagement" element={<AgentManagement />} />
                 <Route path="/llmToolManagement" element={<LLMToolManagement />} />

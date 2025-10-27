@@ -19,7 +19,7 @@ class InputState:
     session_id: str | None = None
 
 @dataclass
-class DataAnalystState(InputState):
+class DataClerkState(InputState):
     # 用户请求的意图类型
     intent_type: str | None = None
     # 取数任务的目的

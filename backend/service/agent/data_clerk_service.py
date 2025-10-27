@@ -49,10 +49,10 @@ from entity.query_data_task_entity import QueryDataTaskEntity
 from model.llm_http_tool_content import LLMHTTPToolContent
 from model.query_data_task_detail import QueryDataTaskDetail, DEFAULT_TASK_TEMPLATE
 from service.agent.model.interrupt import WorkflowInterrupt
-from service.agent.model.data_analyst_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
+from service.agent.model.data_clerk_output_schema import QUERY_DATA, EXECUTE, CREATE, EDIT, DELETE, OTHERS, IntentSchema, \
     TaskSchema, DEFAULT, TableSchema, TEST_RUN, SAVE, LineChartSchema
 from service.agent.model.resume import WorkflowResume
-from service.agent.model.state import DataAnalystState, InputState
+from service.agent.model.state import DataClerkState, InputState
 from service.tool.llm_http_tool import create_llm_http_tool
 from service.tool.mcp_client_tool import create_mcp_client_tools
 from util import datetime_util
@@ -119,7 +119,7 @@ class CustomCallbackHandler(BaseCallbackHandler):
     def on_chain_error(self, error, **kwargs):
         print(f"执行错误: {error}")
 
-class DataAnalystService:
+class DataClerkService:
     # 工作流服务的业务唯一键，同一个business_key下的取数任务名称唯一
     business_key:str
     # 工作流服务默认的系统提示词，包含所有基础业务信息
@@ -189,7 +189,7 @@ class DataAnalystService:
         :param graph_name:
         :return: graph
         """
-        builder = StateGraph(DataAnalystState, input_schema=InputState)
+        builder = StateGraph(DataClerkState, input_schema=InputState)
         # 新Graph
         builder.add_node(GraphNode.INTENT_CLASSIFIER, self.intent_classifier)
         builder.add_node(GraphNode.QUERY_DATA_NODE, self.query_data)
@@ -399,7 +399,7 @@ class DataAnalystService:
 
 
     # NODES
-    async def intent_classifier(self, state: DataAnalystState):
+    async def intent_classifier(self, state: DataClerkState):
         """
         意图判断节点
         :param state:
@@ -501,7 +501,7 @@ class DataAnalystService:
 
         return state
 
-    async def default_node(self, state:DataAnalystState):
+    async def default_node(self, state:DataClerkState):
         # 初次调用，使用原始用户查询
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=f"""
@@ -520,7 +520,7 @@ class DataAnalystService:
         }
 
 
-    def find_task_in_db(self, state: DataAnalystState):
+    def find_task_in_db(self, state: DataClerkState):
         """
         根据任务名称/任务id查找任务详情
         :param state:
@@ -537,7 +537,7 @@ class DataAnalystService:
         else:
             return state
 
-    def find_task_in_store(self, state:DataAnalystState):
+    def find_task_in_store(self, state:DataClerkState):
         """
         去向量存储中查找相近的任务信息
         :param state:
@@ -563,7 +563,7 @@ class DataAnalystService:
 
         return state
 
-    async def execute_task(self, state:DataAnalystState):
+    async def execute_task(self, state:DataClerkState):
         """
         调用工具执行任务
         :param state:
@@ -621,7 +621,7 @@ class DataAnalystService:
                 "messages": [response],
             }
 
-    async def query_data(self, state: DataAnalystState):
+    async def query_data(self, state: DataClerkState):
         """
         使用llm+业务工具进行对话和数据查询
         :param state:
@@ -640,7 +640,7 @@ class DataAnalystService:
             "messages": [response],
         }
 
-    def same_name_when_create(self, state:DataAnalystState):
+    def same_name_when_create(self, state:DataClerkState):
         """
         创建任务时找到同名任务回复给用户
         :param state:
@@ -651,7 +651,7 @@ class DataAnalystService:
             "messages": [cast(AIMessage, response)],
         }
 
-    async def edit_task(self, state: DataAnalystState):
+    async def edit_task(self, state: DataClerkState):
         parser = JsonOutputParser(pydantic_object=TaskSchema)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -695,7 +695,7 @@ class DataAnalystService:
         return state
 
 
-    async def delete_task(self, state:DataAnalystState):
+    async def delete_task(self, state:DataClerkState):
         """
         删除任务
         :param state:
@@ -730,7 +730,7 @@ class DataAnalystService:
             "messages": [response],
         }
 
-    async def create_task(self, state:DataAnalystState):
+    async def create_task(self, state:DataClerkState):
         """
         解析用户输入中对任务模板的补充
         :param state:
@@ -782,7 +782,7 @@ class DataAnalystService:
 
     #
 
-    def save_task(self, state:DataAnalystState):
+    def save_task(self, state:DataClerkState):
         """
         保存任务
         为什么不使用llm调用tool的方式保存？因为是使用resume_stream的方式调用到该节点的，这种方式没法把llm的输出by token返回
@@ -819,7 +819,7 @@ class DataAnalystService:
         }
 
 
-    async def test_run_task(self, state:DataAnalystState):
+    async def test_run_task(self, state:DataClerkState):
         """
         任务试跑
         :param state:
@@ -873,7 +873,7 @@ class DataAnalystService:
             }
 
 
-    async def convert_to_standard_format(self, state:DataAnalystState):
+    async def convert_to_standard_format(self, state:DataClerkState):
         all_messages = state.messages
         last_ai_message = all_messages[-1]
 
@@ -955,7 +955,7 @@ class DataAnalystService:
         else:
             return state
 
-    async def how_to_improve_task(self, state:DataAnalystState):
+    async def how_to_improve_task(self, state:DataClerkState):
         """
         在用户更新任务模板的过程中，对比模板是否填写完善
         :param state:
@@ -999,7 +999,7 @@ class DataAnalystService:
         }
 
     # EDGES
-    def after_intent_classifier(self, state: DataAnalystState) -> Literal[GraphNode.SAVE_TASK, GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
+    def after_intent_classifier(self, state: DataClerkState) -> Literal[GraphNode.SAVE_TASK, GraphNode.DEFAULT_NODE, GraphNode.QUERY_DATA_NODE, GraphNode.FIND_TASK_IN_DB]:
         if state.intent_type == DEFAULT:
             return GraphNode.DEFAULT_NODE
         elif state.intent_type == OTHERS:
@@ -1017,7 +1017,7 @@ class DataAnalystService:
         else:
             return END
 
-    def check_exist_and_next_node(self, state: DataAnalystState) -> Literal[
+    def check_exist_and_next_node(self, state: DataClerkState) -> Literal[
             GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.CREATE_TASK, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
         if state.task_detail is None:
             if state.intent_type == CREATE:
@@ -1038,7 +1038,7 @@ class DataAnalystService:
             else:
                 return END
 
-    def check_exist_in_store_and_next_node(self, state: DataAnalystState) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
+    def check_exist_in_store_and_next_node(self, state: DataClerkState) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
         if state.task_detail is not None:
             if state.intent_type == CREATE:
                 return GraphNode.CREATE_TASK
@@ -1064,7 +1064,7 @@ class DataAnalystService:
 
 
 
-    def need_invoke_tool(self, state: DataAnalystState) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, GraphNode.END]:
+    def need_invoke_tool(self, state: DataClerkState) -> Literal[GraphNode.TOOLS_FOR_TASK, GraphNode.TOOLS_FOR_QUERY_DATA, GraphNode.CONVERT_TO_STANDARD_FORMAT, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -1086,7 +1086,7 @@ class DataAnalystService:
         else:
             return END
 
-    def after_invoke_tool(self, state: DataAnalystState) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
+    def after_invoke_tool(self, state: DataClerkState) -> Literal[GraphNode.EXECUTE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
         if state.intent_type == EXECUTE:
             return GraphNode.EXECUTE_TASK
         elif state.intent_type == TEST_RUN:
@@ -1095,7 +1095,7 @@ class DataAnalystService:
             return END
 
 
-    def need_invoke_delete_task_tool(self, state: DataAnalystState) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, GraphNode.END]:
+    def need_invoke_delete_task_tool(self, state: DataClerkState) -> Literal[GraphNode.TOOLS_FOR_DELETE_TASK, GraphNode.END]:
         last_message = state.messages[-1]
         if not isinstance(last_message, AIMessage):
             raise ValueError(
@@ -1253,7 +1253,7 @@ class DataAnalystService:
         self.query_data_task_dao.update_execute_times_once(id, business_key)
 
     def get_agent_def(self, business_key) -> AgentDefEntity | None:
-        return self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.DATA_ANALYST)
+        return self.agent_def_dao.find_by_business_key_and_type(business_key, AgentDefType.DATA_CLERK)
 
     def get_business_tool_list(self, agent_def: AgentDefEntity):
         llm_tool_list: list[LLMToolEntity] = self.llm_tool_dao.get_llm_tools_by_agent_id(agent_def.id)
@@ -1297,18 +1297,18 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
     return None
 
 
-def create_service(service_name, business_key) -> DataAnalystService:
+def create_service(service_name, business_key) -> DataClerkService:
     """
     创建并缓存service
     :param service_name: 工作流名称
     :param business_key: 业务键
     :return: service
     """
-    data_analyst_service = DataAnalystService(service_name, business_key)
-    service_map[business_key] = data_analyst_service
-    return data_analyst_service
+    data_clerk_service = DataClerkService(service_name, business_key)
+    service_map[business_key] = data_clerk_service
+    return data_clerk_service
 
-def get_service(business_key) -> DataAnalystService | None:
+def get_service(business_key) -> DataClerkService | None:
     """
     根据业务键从缓存中获取工作流实例
     :param business_key:
@@ -1317,8 +1317,8 @@ def get_service(business_key) -> DataAnalystService | None:
     if business_key not in service_map:
         return None
     else:
-        data_analyst_service = service_map[business_key]
-        return data_analyst_service
+        data_clerk_service = service_map[business_key]
+        return data_clerk_service
 
 def convert_2_interrupt(interrupt: Interrupt|dict) -> WorkflowInterrupt:
     """
@@ -1401,8 +1401,8 @@ def add_human_in_the_loop(
 
     return call_tool_with_interrupt
 
-def get_or_create_data_analyst_service(business_key) -> DataAnalystService:
-    data_analyst_service = get_service(business_key)
-    if data_analyst_service is None:
-        data_analyst_service = create_service(business_key, business_key)
-    return data_analyst_service
+def get_or_create_data_clerk_service(business_key) -> DataClerkService:
+    data_clerk_service = get_service(business_key)
+    if data_clerk_service is None:
+        data_clerk_service = create_service(business_key, business_key)
+    return data_clerk_service
