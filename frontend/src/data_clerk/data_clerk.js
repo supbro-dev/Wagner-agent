@@ -7,7 +7,7 @@ import markdownit from 'markdown-it';
 import {Content} from "antd/es/layout/layout";
 import { Line } from '@ant-design/plots';
 import LineChart from "@ant-design/plots/es/components/line";
-// data_analyst.js
+// data_clerk.js
 import { fetchGet, fetchPost, doStream } from '../utils/requestUtils';
 
 
@@ -23,7 +23,7 @@ const userAvatar = {
 const md = markdownit({ html: true, breaks: true });
 
 
-const Data_analyst = () => {
+const DataClerk = () => {
     const { token } = theme.useToken();
     const [value, setValue] = useState('');
     const [loading, setLoading] = useState(false);
@@ -878,4 +878,4 @@ const Data_analyst = () => {
 
 }
 
-export default Data_analyst;
+export default DataClerk;

@@ -9,8 +9,8 @@ def create_app(Config=None):
     app.config['RESPONSE_TIMEOUT'] = 600
 
     # # 注册蓝图
-    from web.data_analyst_controller import data_analyst_api
-    app.register_blueprint(data_analyst_api, url_prefix='/agentApi/v1/dataAnalyst/')
+    from web.data_clerk_controller import data_clerk_api
+    app.register_blueprint(data_clerk_api, url_prefix='/agentApi/v1/dataClerk/')
 
     from web.admin_controller import admin_api
     app.register_blueprint(admin_api, url_prefix='/admin/')
