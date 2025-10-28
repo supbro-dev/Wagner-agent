@@ -145,6 +145,7 @@ cd frontend;npm start
 ![](assets/show_tasks.png)
 
 上传自己的知识库文档
+
 ![](assets/knowledge_upload.png)
 
 向助手Agent提出问题，助手Agent会检索知识库、历史记忆，结合当前任务详情，进行推理，给出任务执行步骤
