@@ -34,15 +34,19 @@ class IntentSchema(BaseModel):
 # 任务的模板
 class TaskSchema(BaseModel):
     target: Optional[str] = Field(
-        description="任务的目标"
+        description="任务目标和具体内容"
     )
     query_param:  Optional[str] = Field(
         default=None,
-        description="查询参数"
+        description="查询条件"
     )
     data_operation: Optional[str] = Field(
         default=None,
         description="调用工具后的加工逻辑"
+    )
+    data_format: Optional[str] = Field(
+        default=None,
+        description="数据格式"
     )
 
 # 表格的模板

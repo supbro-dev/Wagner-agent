@@ -109,16 +109,6 @@ DEFAULT_INTERRUPT_CONFIG = {
         }
 
 
-class CustomCallbackHandler(BaseCallbackHandler):
-    def on_chain_start(self, serialized, inputs, **kwargs):
-        print(f"开始执行: {serialized.get('name')}")
-
-    def on_chain_end(self, outputs, **kwargs):
-        print(f"执行完成，输出: {outputs}")
-
-    def on_chain_error(self, error, **kwargs):
-        print(f"执行错误: {error}")
-
 class DataClerkService:
     # 工作流服务的业务唯一键，同一个business_key下的取数任务名称唯一
     business_key:str
@@ -289,13 +279,9 @@ class DataClerkService:
         :param session_id: 用来做state的隔离
         :return:stream
         """
-        # 使用回调
-        handler = CustomCallbackHandler()
-
         # 上下文配置
         config = RunnableConfig(
             configurable={"thread_id": session_id},
-            callbacks=CallbackManager([handler])
         )
 
         stream = self.graph.astream(
@@ -312,13 +298,9 @@ class DataClerkService:
         :param session_id: 用来做state的隔离
         :return:stream
         """
-        # 使用回调
-        handler = CustomCallbackHandler()
-
         # 上下文配置
         config = RunnableConfig(
             configurable={"thread_id": session_id},
-            callbacks=CallbackManager([handler])
         )
 
         stream = self.graph.astream(
@@ -419,7 +401,7 @@ class DataClerkService:
             
             共有以下几种意图
             1. {QUERY_DATA} - 查询数据  
-            2. {EXECUTE} - 执行某个任务，注意：执行任务时，可以指定某些查询条件
+            2. {EXECUTE} - 明确表示"执行任务"，注意：执行任务时，可以指定某些查询条件
             3. {CREATE} - 创建新任务
             4. {EDIT} - 修改/编辑某个任务
             5. {DELETE} - 删除某个任务
@@ -440,7 +422,7 @@ class DataClerkService:
 
         examples = [
             # 使用few-shot示例（强调AI必须返回JsonOutputParser的格式，不加AI会尝试返回自然语言的KV）：
-            ("human", "执行任务：本小组上个月的月度人效报告"),
+            ("human", "执行任务：月度人效报告"),
             ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"月度人效报告\"}"),
             ("human", "执行任务：小组人效报告，查询条件：2025年12月10日"),
             ("ai", "{\"intent_type\": \"" + EXECUTE + "\", \"task_name\": \"小组人效报告\", \"params\": \"2025年12月10日\"}"),
@@ -678,9 +660,9 @@ class DataClerkService:
         ])
 
         examples = [
-            ("human", "任务目标和具体内容：每日工作效率统计。查询参数为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率"),
+            ("human", "任务目标和具体内容：每日工作效率统计。查询条件为：查询昨天的数据。获取到结果之后的数据加工逻辑：单加一列，工作量除以工作时长为工作效率。数据格式：表格"),
             ("ai",
-             "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\"}"),
+             "{\"data_operation\": \"单加一列：工作量除以工作时长为工作效率\",  \"query_param\":\"查询昨天的数据\", \"target\": \"每日工作效率统计\", \"data_format\":\"表格\"}"),
         ]
 
         chain = prompt | self.llm | parser
@@ -1019,46 +1001,44 @@ class DataClerkService:
 
     def check_exist_and_next_node(self, state: DataClerkState) -> Literal[
             GraphNode.FIND_TASK_IN_STORE, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.CREATE_TASK, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.TEST_RUN_TASK, GraphNode.END]:
-        if state.task_detail is None:
+        if state.task_id is None: # 新建任务
             if state.intent_type == CREATE:
                 return GraphNode.CREATE_TASK
-            else:
+            elif state.intent_type == TEST_RUN:
+                # 任务完整则允许试算，不完整则继续新增
+                if state.task_detail is not None and state.task_detail.is_integrated():
+                    return GraphNode.TEST_RUN_TASK
+                else:
+                    return GraphNode.CREATE_TASK
+            elif state.intent_type == EXECUTE:
                 return GraphNode.FIND_TASK_IN_STORE
-        else:
+            else:
+                return GraphNode.END
+        else: # 任务已存在
             if state.intent_type == CREATE:
                 return GraphNode.SAME_NAME_WHEN_CREATE
             elif state.intent_type == EXECUTE:
                 return GraphNode.EXECUTE_TASK
             elif state.intent_type == TEST_RUN:
-                return GraphNode.TEST_RUN_TASK
+                # 任务完整则允许试算，不完整则继续编辑
+                if state.task_detail is not None and state.task_detail.is_integrated():
+                    return GraphNode.TEST_RUN_TASK
+                else:
+                    return GraphNode.EDIT_TASK
             elif state.intent_type == EDIT:
                 return GraphNode.EDIT_TASK
             elif state.intent_type == DELETE:
                 return GraphNode.DELETE_TASK
             else:
-                return END
+                return GraphNode.END
 
+    # 只有执行任务允许名称模糊查询
     def check_exist_in_store_and_next_node(self, state: DataClerkState) -> Literal[GraphNode.CREATE_TASK, GraphNode.SAME_NAME_WHEN_CREATE, GraphNode.EXECUTE_TASK, GraphNode.EDIT_TASK, GraphNode.DELETE_TASK, GraphNode.END]:
-        if state.task_detail is not None:
-            if state.intent_type == CREATE:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == EXECUTE:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == EDIT:
-                return GraphNode.CREATE_TASK
-            elif state.intent_type == DELETE:
-                return GraphNode.CREATE_TASK
-            else:
-                return END
+        if state.task_id is None:
+            return GraphNode.CREATE_TASK
         else:
-            if state.intent_type == CREATE:
-                return GraphNode.SAME_NAME_WHEN_CREATE
-            elif state.intent_type == EXECUTE:
+            if state.intent_type == EXECUTE:
                 return GraphNode.EXECUTE_TASK
-            elif state.intent_type == EDIT:
-                return GraphNode.EDIT_TASK
-            elif state.intent_type == DELETE:
-                return GraphNode.DELETE_TASK
             else:
                 return END
 
@@ -1291,7 +1271,8 @@ def get_tasks_mode_ai_msg_content(detail) -> str | None:
         result_dict = dict(detail["result"])
         msgs = result_dict["messages"]
         for m in msgs:
-            msg_dict = dict(m)
+            # m为tuple
+            msg_dict = {m[0]:m[1]}
             if "ai" in msg_dict:
                 return msg_dict["ai"]
     return None

@@ -23,6 +23,9 @@ const AgentManagement = () => {
   // 添加LLM工具列表状态
   const [llmTools, setLlmTools] = useState([]);
 
+  // 监听表单中agentType的变化
+  const agentTypeValue = Form.useWatch('agentType', form);
+
   // 获取LLM工具列表
   const fetchLlmTools = async () => {
     fetchGet(
@@ -133,11 +136,17 @@ const AgentManagement = () => {
     try {
       const values = await form.validateFields();
       
+      // 如果agentType是assistant，则不提交toolIds字段
+      let submitValues = { ...values };
+      if (values.agentType === 'assistant') {
+        delete submitValues.toolIds;
+      }
+      
       if (editingAgent) {
         // 编辑操作
         fetchPost(
           '/agentApi/v1/agentDef/update',
-          { ...values, agentId: editingAgent.id },
+          { ...submitValues, agentId: editingAgent.id },
           (data) => {
             message.success('更新成功');
             setModalVisible(false);
@@ -159,7 +168,7 @@ const AgentManagement = () => {
         // 新增操作
         fetchPost(
           '/agentApi/v1/agentDef/create',
-          values,
+          submitValues,
           (data) => {
             message.success('添加成功');
             setModalVisible(false);
@@ -321,7 +330,7 @@ const AgentManagement = () => {
       />
 
       <Modal
-          title={editingAgent ? "编辑代理" : "新增代理"}
+          title={editingAgent ? "编辑Agent" : "新增Agent"}
           open={modalVisible}
           onOk={handleModalOk}
           onCancel={handleModalCancel}
@@ -366,25 +375,28 @@ const AgentManagement = () => {
             </Select>
           </Form.Item>
 
-          <Form.Item
-              name="toolIds"
-              label="LLM工具"
-          >
-            <Select 
-              mode="multiple" 
-              placeholder="请选择LLM工具"
-              optionFilterProp="children"
-              filterOption={(input, option) => 
-                option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
-              }
+          {/* 当agentType不是assistant时显示LLM工具选择 */}
+          {agentTypeValue !== 'assistant' && (
+            <Form.Item
+                name="toolIds"
+                label="LLM工具"
             >
-              {llmTools.map(tool => (
-                <Option key={tool.value} value={tool.value}>
-                  {tool.label}
-                </Option>
-              ))}
-            </Select>
-          </Form.Item>
+              <Select 
+                mode="multiple" 
+                placeholder="请选择LLM工具"
+                optionFilterProp="children"
+                filterOption={(input, option) => 
+                  option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+                }
+              >
+                {llmTools.map(tool => (
+                  <Option key={tool.value} value={tool.value}>
+                    {tool.label}
+                  </Option>
+                ))}
+              </Select>
+            </Form.Item>
+          )}
         </Form>
       </Modal>
     </div>
