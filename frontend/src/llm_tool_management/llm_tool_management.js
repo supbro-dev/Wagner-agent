@@ -109,12 +109,21 @@ const LLMToolManagement = () => {
   const handleModalOk = async () => {
     try {
       const values = await form.validateFields();
+      
+      // 根据工具类型过滤不需要提交的字段
+      let submitValues = { ...values };
+      if (values.toolType === 'mcp') {
+        // 如果是MCP类型，移除不需要的字段
+        delete submitValues.argsDict;
+        delete submitValues.requestHandleScript;
+        delete submitValues.responseHandleScript;
+      }
 
       if (editingTool) {
         // 编辑操作
         fetchPost(
           '/agentApi/v1/llmTool/update',
-          { ...values, toolId: editingTool.id },
+          { ...submitValues, toolId: editingTool.id },
           (data) => {
             if (values.toolType === "mcp") {
               messageApi.success("MCP SERVER包含以下工具:" + data.data.result);
@@ -138,7 +147,7 @@ const LLMToolManagement = () => {
         // 新增操作
         fetchPost(
           '/agentApi/v1/llmTool/create',
-          values,
+          submitValues,
           (data) => {
             if (values.toolType === "mcp") {
               messageApi.success("MCP SERVER包含以下工具:" + data.data.result);
@@ -167,6 +176,43 @@ const LLMToolManagement = () => {
     setModalVisible(false);
     form.resetFields();
     setEditingTool(null);
+  };
+
+  const handleTestRun = async () => {
+    try {
+      const values = await form.validateFields();
+      
+      // 根据工具类型过滤不需要提交的字段
+      let submitValues = { ...values };
+      if (values.toolType === 'mcp') {
+        // 如果是MCP类型，移除不需要的字段
+        delete submitValues.argsDict;
+        delete submitValues.requestHandleScript;
+        delete submitValues.responseHandleScript;
+      }
+
+      // 执行试运行
+      fetchPost(
+        '/agentApi/v1/llmTool/testRun',
+        submitValues,
+        (data) => {
+          if (values.toolType === "mcp") {
+            messageApi.success("MCP SERVER包含以下工具:" + data.data.result);
+          } else {
+            messageApi.success("试运行成功: " + data.data.result);
+          }
+        },
+        (error) => {
+          if (Array.isArray(error.data) && error.data.length > 0) {
+            messageApi.error(error.data[0]);
+          } else {
+            messageApi.error('试运行失败: ' + error);
+          }
+        }
+      );
+    } catch (error) {
+      messageApi.error('操作失败: ' + error.message);
+    }
   };
 
   const columns = [
@@ -230,6 +276,9 @@ const LLMToolManagement = () => {
       ),
     },
   ];
+
+  // 获取当前表单中的工具类型值
+  const toolTypeValue = Form.useWatch('toolType', form);
 
   return (
     <div style={{ padding: '24px' }}>
@@ -302,6 +351,17 @@ const LLMToolManagement = () => {
         okText="保存"
         cancelText="取消"
         width={600}
+        footer={[
+          <Button key="testRun" type="primary" onClick={handleTestRun}>
+            试运行
+          </Button>,
+          <Button key="cancel" onClick={handleModalCancel}>
+            取消
+          </Button>,
+          <Button key="ok" type="primary" onClick={handleModalOk}>
+            保存
+          </Button>,
+        ]}
       >
         <Form form={form} layout="vertical">
           {contextHolder}
@@ -340,27 +400,32 @@ const LLMToolManagement = () => {
             <TextArea rows={4} placeholder="请输入工具内容" />
           </Form.Item>
 
-          <Form.Item
-            name="argsDict"
-            label="参数字典"
-            rules={[{ required: true, message: '请输入参数字典!' }]}
-          >
-            <TextArea rows={4} placeholder="请输入参数字典" />
-          </Form.Item>
+          {/* 当工具类型不是MCP时显示以下字段 */}
+          {toolTypeValue !== 'mcp' && (
+            <>
+              <Form.Item
+                name="argsDict"
+                label="参数字典"
+                rules={[{ required: true, message: '请输入参数字典!' }]}
+              >
+                <TextArea rows={4} placeholder="请输入参数字典" />
+              </Form.Item>
 
-          <Form.Item
-            name="requestHandleScript"
-            label="请求处理脚本"
-          >
-            <TextArea rows={4} placeholder="请输入请求处理脚本（可选）" />
-          </Form.Item>
+              <Form.Item
+                name="requestHandleScript"
+                label="请求处理脚本"
+              >
+                <TextArea rows={4} placeholder="请输入请求处理脚本（可选）" />
+              </Form.Item>
 
-          <Form.Item
-            name="responseHandleScript"
-            label="响应处理脚本"
-          >
-            <TextArea rows={4} placeholder="请输入响应处理脚本（可选）" />
-          </Form.Item>
+              <Form.Item
+                name="responseHandleScript"
+                label="响应处理脚本"
+              >
+                <TextArea rows={4} placeholder="请输入响应处理脚本（可选）" />
+              </Form.Item>
+            </>
+          )}
         </Form>
       </Modal>
     </div>

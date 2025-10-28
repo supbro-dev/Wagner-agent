@@ -30,7 +30,7 @@ const DataClerk = () => {
     const [bubbleLoading, setBubbleLoading] = useState(false)
     const [treeData, setTreeData] = useState([]);
     const [conversationList, setConversationList] = useState([]);
-    const [workGroupCode, setWorkGroupCode] = useState('');
+    // const [workGroupCode, setWorkGroupCode] = useState('');
     const [messageApi, contextHolder] = message.useMessage();
     const [sessionId, setSessionId] = useState('');
 
@@ -61,7 +61,7 @@ const DataClerk = () => {
     const location = useLocation();
     // 使用 URLSearchParams 解析查询字符串
     const queryParams = new URLSearchParams(location.search);
-    const workplaceCode = queryParams.get('workplaceCode');
+    const businessKey = queryParams.get('businessKey');
 
 
     const error = (msg) => {
@@ -69,46 +69,45 @@ const DataClerk = () => {
     };
 
 
-    const onSelectTreeNode = (nodes, e) => {
-        if (nodes.length === 0) {
-            return
-        }
-        // 暂时只支持工作组触发Agent
-        if (e.node.type !== 'WORK_GROUP') {
-            return
-        }
+    // const onSelectTreeNode = (nodes, e) => {
+    //     if (nodes.length === 0) {
+    //         return
+    //     }
+    //     // 暂时只支持工作组触发Agent
+    //     if (e.node.type !== 'WORK_GROUP') {
+    //         return
+    //     }
+    //
+    //     const workGroupCode = nodes[0];
+    //     setWorkGroupCode(workGroupCode)
+    //
+    //     if (conversationList.length === 0) {
+    //         welcome(workplaceCode, workGroupCode, sessionId);
+    //     }
+    // }
+    //
+    // const initTree = async (workplaceCode) => {
+    //     try {
+    //         const response = await fetch(`/api/v1/process/getWorkplaceStructureTree?workplaceCode=${workplaceCode}`);
+    //         if (!response.ok) {
+    //             throw new Error(`请求失败: ${response.status}`);
+    //         }
+    //         const data = await response.json();
+    //
+    //         setTreeData([data.data])
+    //     } catch (error) {
+    //         console.error('获取架构树失败:', error);
+    //     }
+    // }
 
-        const workGroupCode = nodes[0];
-        setWorkGroupCode(workGroupCode)
-
-        if (conversationList.length === 0) {
-            welcome(workplaceCode, workGroupCode, sessionId);
-        }
-    }
-
-    const initTree = async (workplaceCode) => {
-        try {
-            const response = await fetch(`/api/v1/process/getWorkplaceStructureTree?workplaceCode=${workplaceCode}`);
-            if (!response.ok) {
-                throw new Error(`请求失败: ${response.status}`);
-            }
-            const data = await response.json();
-
-            setTreeData([data.data])
-        } catch (error) {
-            console.error('获取架构树失败:', error);
-        }
-    }
-
-    const welcome = async (workplaceCode, workGroupCode, sessionId) => {
+    const welcome = async (businessKey, sessionId) => {
         setLoading(true);
         setBubbleLoading(true)
         setShowNewAiBubble(true)
 
         const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
-        const businessKey = workplaceCode + '-' + workGroupCode
-        doStream(`/agentApi/v1/dataAnalyst/welcome?businessKey=${businessKey}&sessionId=${sessionId}`,
+        doStream(`/agentApi/v1/dataClerk/welcome?businessKey=${businessKey}&sessionId=${sessionId}`,
             (event) => {
                 // 注意：SSE的默认事件类型是'message'，数据在event.data中
                 if (event.data) {
@@ -132,7 +131,7 @@ const DataClerk = () => {
             },
             () => {
                 setLoading(false);
-                getFrequentlyAndUsuallyTasks(workplaceCode, workGroupCode)
+                getFrequentlyAndUsuallyTasks(businessKey)
             },
             () => {
                 setLoading(false);
@@ -150,6 +149,8 @@ const DataClerk = () => {
         }
 
         setSessionId(sessionId);
+
+        return sessionId
     }
 
     const renderMarkdown = content => {
@@ -161,216 +162,216 @@ const DataClerk = () => {
         );
     };
 
-    const confirmResume = (resumeType, resumeDesc, resume_mode) => {
-        setLoading(true)
-
-        const currentResponse = response
-        setResponse(''); // 清空旧响应
-        setValue('')
-
-        // 把当前未添加到列表中的对话添加进列表
-        const newConversationList = [...conversationList]
-        if (currentResponse) {
-            newConversationList.push({
-                avatar:aiAvatar,
-                placement:"start",
-                content:currentResponse,
-                type:'ai',
-            });
-        }
-
-        const aiConfirm = {
-            avatar:aiAvatar,
-            placement:"start",
-            content:confirmContent,
-            type:'ai',
-        }
-
-        const humanAnswer = {
-            avatar:userAvatar,
-            placement:"end",
-            content:resumeDesc+"任务:"+ confirmTaskName,
-            type:'human',
-        }
-        const taskName = confirmTaskName
-
-        newConversationList.push(aiConfirm, humanAnswer)
-        setConversationList(newConversationList)
-
-        // 隐藏最新AI回复框
-        setShowNewAiBubble(false)
-        // 隐藏确认提示框
-        setShowConfirmBubble(false)
-        setConfirmContent('')
-        setConfirmTaskName('')
-
-        // 使用调用方式resume
-        if (resume_mode === "invoke") {
-            const postData = {
-                workplaceCode,
-                workGroupCode,
-                sessionId,
-                resumeType:resumeType,
-            }
-
-            try {
-                fetch('/agentApi/v1/agent/resumeInterrupt', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json', // 设置内容类型为JSON
-                    },
-                    body: JSON.stringify(postData),
-                })
-                    .then(response => response.json()) // 将响应解析为JSON
-                    .then(data => {
-                        setLoading(false)
-
-                        if (data.code != 0) {
-                            error(data.msg)
-                        } else {
-                            if (data.data) {
-                                if (data.data.content != undefined) {
-                                    if (data.data.content === true) {
-                                        setConversationList([...newConversationList, {
-                                            avatar:aiAvatar,
-                                            placement:"start",
-                                            content: "任务：" + taskName + " " + resumeDesc +"成功",
-                                            type:'ai',
-                                        }])
-                                    } else {
-                                        setConversationList([...newConversationList, {
-                                            avatar:aiAvatar,
-                                            placement:"start",
-                                            content: data.data.content,
-                                            type:'ai',
-                                        }])
-                                    }
-                                } else if (data.data.interrupt){
-                                    const interrupt = data.data.interrupt
-                                    showConfirm(interrupt.description, interrupt.confirmOptionList, interrupt.taskName)
-                                }
-                            } else {
-                                setConversationList([...newConversationList, {
-                                    avatar:aiAvatar,
-                                    placement:"start",
-                                    content: "任务：" + taskName + " " + resumeDesc + "失败！",
-                                    type:'ai',
-                                }])
-                            }
-                        }
-                    })
-                    .catch((err) => {
-                        error(err)
-                        console.error('Error:', err);
-                    });
-
-            } catch (error) {
-                console.error('跟AI助手对话失败:', error);
-            }
-        } else {
-            // 使用流式方式resume
-            // 建立SSE连接
-            const eventSource = new EventSource(`/agentApi/v1/agent/resumeInterruptStream?resumeType=${resumeType}&workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`);
-
-            let showCurrentNewAiBubble = false
-            let msgId = null
-            eventSource.onmessage = (event) => {
-                // 注意：SSE的默认事件类型是'message'，数据在event.data中
-                if (event.data) {
-                    try {
-                        const data = JSON.parse(event.data);
-                        if (data.token) {
-                            if (!showCurrentNewAiBubble) {
-                                setShowNewAiBubble(true)
-                                showCurrentNewAiBubble = true
-                            }
-                            if (msgId == null) {
-                                msgId = data.msgId
-                            }
-                            setResponse(prev => prev + data.token); // 增量更新
-                        } else if (data.interrupt) {
-                            const interrupt = JSON.parse(data.interrupt)
-                            showConfirm(interrupt.description, interrupt.confirmOptionList, interrupt.taskName)
-                        }
-                    } catch (e) {
-                        console.error('解析错误', e);
-                    }
-                }
-            };
-            // 监听自定义的'done'事件
-            eventSource.addEventListener('done', () => {
-                eventSource.close();
-                setLoading(false);
-            });
-
-
-            eventSource.onerror = () => {
-                eventSource.close();
-                setLoading(false);
-            };
-        }
-    }
+    // const confirmResume = (resumeType, resumeDesc, resume_mode) => {
+    //     setLoading(true)
+    //
+    //     const currentResponse = response
+    //     setResponse(''); // 清空旧响应
+    //     setValue('')
+    //
+    //     // 把当前未添加到列表中的对话添加进列表
+    //     const newConversationList = [...conversationList]
+    //     if (currentResponse) {
+    //         newConversationList.push({
+    //             avatar:aiAvatar,
+    //             placement:"start",
+    //             content:currentResponse,
+    //             type:'ai',
+    //         });
+    //     }
+    //
+    //     const aiConfirm = {
+    //         avatar:aiAvatar,
+    //         placement:"start",
+    //         content:confirmContent,
+    //         type:'ai',
+    //     }
+    //
+    //     const humanAnswer = {
+    //         avatar:userAvatar,
+    //         placement:"end",
+    //         content:resumeDesc+"任务:"+ confirmTaskName,
+    //         type:'human',
+    //     }
+    //     const taskName = confirmTaskName
+    //
+    //     newConversationList.push(aiConfirm, humanAnswer)
+    //     setConversationList(newConversationList)
+    //
+    //     // 隐藏最新AI回复框
+    //     setShowNewAiBubble(false)
+    //     // 隐藏确认提示框
+    //     setShowConfirmBubble(false)
+    //     setConfirmContent('')
+    //     setConfirmTaskName('')
+    //
+    //     // 使用调用方式resume
+    //     if (resume_mode === "invoke") {
+    //         const postData = {
+    //             workplaceCode,
+    //             workGroupCode,
+    //             sessionId,
+    //             resumeType:resumeType,
+    //         }
+    //
+    //         try {
+    //             fetch('/agentApi/v1/agent/resumeInterrupt', {
+    //                 method: 'POST',
+    //                 headers: {
+    //                     'Content-Type': 'application/json', // 设置内容类型为JSON
+    //                 },
+    //                 body: JSON.stringify(postData),
+    //             })
+    //                 .then(response => response.json()) // 将响应解析为JSON
+    //                 .then(data => {
+    //                     setLoading(false)
+    //
+    //                     if (data.code != 0) {
+    //                         error(data.msg)
+    //                     } else {
+    //                         if (data.data) {
+    //                             if (data.data.content != undefined) {
+    //                                 if (data.data.content === true) {
+    //                                     setConversationList([...newConversationList, {
+    //                                         avatar:aiAvatar,
+    //                                         placement:"start",
+    //                                         content: "任务：" + taskName + " " + resumeDesc +"成功",
+    //                                         type:'ai',
+    //                                     }])
+    //                                 } else {
+    //                                     setConversationList([...newConversationList, {
+    //                                         avatar:aiAvatar,
+    //                                         placement:"start",
+    //                                         content: data.data.content,
+    //                                         type:'ai',
+    //                                     }])
+    //                                 }
+    //                             } else if (data.data.interrupt){
+    //                                 const interrupt = data.data.interrupt
+    //                                 showConfirm(interrupt.description, interrupt.confirmOptionList, interrupt.taskName)
+    //                             }
+    //                         } else {
+    //                             setConversationList([...newConversationList, {
+    //                                 avatar:aiAvatar,
+    //                                 placement:"start",
+    //                                 content: "任务：" + taskName + " " + resumeDesc + "失败！",
+    //                                 type:'ai',
+    //                             }])
+    //                         }
+    //                     }
+    //                 })
+    //                 .catch((err) => {
+    //                     error(err)
+    //                     console.error('Error:', err);
+    //                 });
+    //
+    //         } catch (error) {
+    //             console.error('跟AI助手对话失败:', error);
+    //         }
+    //     } else {
+    //         // 使用流式方式resume
+    //         // 建立SSE连接
+    //         const eventSource = new EventSource(`/agentApi/v1/agent/resumeInterruptStream?resumeType=${resumeType}&workplaceCode=${workplaceCode}&sessionId=${sessionId}&workGroupCode=${workGroupCode}`);
+    //
+    //         let showCurrentNewAiBubble = false
+    //         let msgId = null
+    //         eventSource.onmessage = (event) => {
+    //             // 注意：SSE的默认事件类型是'message'，数据在event.data中
+    //             if (event.data) {
+    //                 try {
+    //                     const data = JSON.parse(event.data);
+    //                     if (data.token) {
+    //                         if (!showCurrentNewAiBubble) {
+    //                             setShowNewAiBubble(true)
+    //                             showCurrentNewAiBubble = true
+    //                         }
+    //                         if (msgId == null) {
+    //                             msgId = data.msgId
+    //                         }
+    //                         setResponse(prev => prev + data.token); // 增量更新
+    //                     } else if (data.interrupt) {
+    //                         const interrupt = JSON.parse(data.interrupt)
+    //                         showConfirm(interrupt.description, interrupt.confirmOptionList, interrupt.taskName)
+    //                     }
+    //                 } catch (e) {
+    //                     console.error('解析错误', e);
+    //                 }
+    //             }
+    //         };
+    //         // 监听自定义的'done'事件
+    //         eventSource.addEventListener('done', () => {
+    //             eventSource.close();
+    //             setLoading(false);
+    //         });
+    //
+    //
+    //         eventSource.onerror = () => {
+    //             eventSource.close();
+    //             setLoading(false);
+    //         };
+    //     }
+    // }
 
 
     const confirmThis = (confirmType, confirmContent, question) => {
+        clearConfirm()
         if (confirmType === 'invoke') {
-
+            submitQuestionStream(question)
         } else if (confirmType === 'question') {
-            clearConfirm()
             setValue(question)
         }
     }
 
-    const cancelResume = (otherFun) => {
-        // 隐藏确认提示框
-        clearConfirm()
-
-        // 更新AI对话
-        if (response) {
-            // 更新实时bubble到list
-            updateAiConversationList(response, conversationId)
-
-            setResponse(''); // 清空旧响应
-            setConversationId(null); // 清空旧响应
-
-            clearCurrentStandardData()
-        }
-
-        const postData = {
-            workplaceCode,
-            workGroupCode,
-            sessionId,
-            resumeType:"cancel"
-        }
-
-        try {
-            fetch('/agentApi/v1/agent/resumeInterrupt', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json', // 设置内容类型为JSON
-                },
-                body: JSON.stringify(postData),
-            })
-                .then(response => response.json()) // 将响应解析为JSON
-                .then(data => {
-                    if (data.code != 0) {
-                        error(data.msg)
-                    } else {
-                        // 如果cancel成功，执行回调
-                        if (otherFun) {
-                            otherFun()
-                        }
-                    }
-                })
-                .catch((err) => {
-                    error(err)
-                    console.error('Error:', err);
-                });
-
-        } catch (error) {
-            console.error('跟AI助手对话失败:', error);
-        }
-    }
+    // const cancelResume = (otherFun) => {
+    //     // 隐藏确认提示框
+    //     clearConfirm()
+    //
+    //     // 更新AI对话
+    //     if (response) {
+    //         // 更新实时bubble到list
+    //         updateAiConversationList(response, conversationId)
+    //
+    //         setResponse(''); // 清空旧响应
+    //         setConversationId(null); // 清空旧响应
+    //
+    //         clearCurrentStandardData()
+    //     }
+    //
+    //     const postData = {
+    //         workplaceCode,
+    //         workGroupCode,
+    //         sessionId,
+    //         resumeType:"cancel"
+    //     }
+    //
+    //     try {
+    //         fetch('/agentApi/v1/agent/resumeInterrupt', {
+    //             method: 'POST',
+    //             headers: {
+    //                 'Content-Type': 'application/json', // 设置内容类型为JSON
+    //             },
+    //             body: JSON.stringify(postData),
+    //         })
+    //             .then(response => response.json()) // 将响应解析为JSON
+    //             .then(data => {
+    //                 if (data.code != 0) {
+    //                     error(data.msg)
+    //                 } else {
+    //                     // 如果cancel成功，执行回调
+    //                     if (otherFun) {
+    //                         otherFun()
+    //                     }
+    //                 }
+    //             })
+    //             .catch((err) => {
+    //                 error(err)
+    //                 console.error('Error:', err);
+    //             });
+    //
+    //     } catch (error) {
+    //         console.error('跟AI助手对话失败:', error);
+    //     }
+    // }
 
     const renderConfirm = content => {
         let myConfirmOptionList = []
@@ -381,7 +382,7 @@ const DataClerk = () => {
             ))
         }
         myConfirmOptionList.push((
-            <a href="#" onClick={() => cancelResume(undefined)}>【取消】</a>
+            <a href="#" onClick={clearConfirm}>【取消】</a>
         ))
 
         return (
@@ -407,10 +408,9 @@ const DataClerk = () => {
     }
 
 
-    const getFrequentlyAndUsuallyTasks = (workplaceCode, workGroupCode) => {
-        const businessKey = workplaceCode + '-' + workGroupCode
+    const getFrequentlyAndUsuallyTasks = (businessKey) => {
         try {
-            fetch(`/agentApi/v1/dataAnalyst/getFrequentlyAndUsuallyExecuteTasks?businessKey=${businessKey}`, {
+            fetch(`/agentApi/v1/dataClerk/getFrequentlyAndUsuallyExecuteTasks?businessKey=${businessKey}`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json', // 设置内容类型为JSON
@@ -473,9 +473,8 @@ const DataClerk = () => {
 
 
     const checkConfirm =  async () => {
-        const businessKey = workplaceCode + '-' + workGroupCode
         try {
-            fetch(`/agentApi/v1/dataAnalyst/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,is_integrated,task_name`, {
+            fetch(`/agentApi/v1/dataClerk/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,is_integrated,task_name`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json', // 设置内容类型为JSON
@@ -496,7 +495,7 @@ const DataClerk = () => {
                             const myTaskName = task_name
                             const options = [
                                 {confirmDesc:"试跑任务", confirmType:"question", question:"试跑任务:" + myTaskName},
-                                {confirmDesc:"保存任务", confirmType:"question", question:"保存任务:" + myTaskName},
+                                {confirmDesc:"保存任务", confirmType:"invoke", question:"保存任务:" + myTaskName},
                             ]
                             showConfirm("任务模板已经填写完整，请确认下一步操作：", options,
                                 myTaskName)
@@ -607,8 +606,7 @@ const DataClerk = () => {
     }
 
     const checkShowStandardData = async (msgId) => {
-        const businessKey = workplaceCode + '-' + workGroupCode
-        fetchGet(`/agentApi/v1/dataAnalyst/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,last_run_msg_id,last_standard_data,task_detail`,
+        fetchGet(`/agentApi/v1/dataClerk/getStateProperties?businessKey=${businessKey}&sessionId=${sessionId}&statePropertyNames=intent_type,last_run_msg_id,last_standard_data,task_detail`,
             (data) => {
                 const {
                     intent_type,
@@ -660,6 +658,7 @@ const DataClerk = () => {
 
 
     const submitQuestionStream = async (question) => {
+        clearConfirm()
         setLoading(true);
         setBubbleLoading(true)
         setShowNewAiBubble(true)
@@ -684,8 +683,7 @@ const DataClerk = () => {
         const firstGetEvent = {current:false}
         const lastMsgId = {current:null}
 
-        const businessKey = workplaceCode + '-' + workGroupCode
-        doStream(`/agentApi/v1/dataAnalyst/questionStream?question=${encodeURIComponent(question)}&businessKey=${businessKey}&sessionId=${sessionId}`,
+        doStream(`/agentApi/v1/dataClerk/questionStream?question=${encodeURIComponent(question)}&businessKey=${businessKey}&sessionId=${sessionId}`,
             (event) => {
                 if (event.data) {
                     if (!firstGetEvent.current) {
@@ -728,10 +726,12 @@ const DataClerk = () => {
 
     // 初始化数据
     useEffect(() => {
-        if (workplaceCode) {
-            initTree(workplaceCode)
+        if (businessKey) {
+            // initTree(workplaceCode)
+            const sessionId = getSessionId()
+            welcome(businessKey, sessionId)
         }
-        getSessionId()
+
     }, []);
 
     // 性能优化一下
@@ -825,13 +825,13 @@ const DataClerk = () => {
                     </Breadcrumb.Item>
                 </Breadcrumb>
                 <Splitter style={{ height: '100%', boxShadow: '0 0 10px rgba(0, 0, 0, 0.1)' }}>
-                    <Splitter.Panel defaultSize="20%" min="20%" max="70%">
-                        <Tree
-                            defaultExpandAll={true}
-                            onSelect={onSelectTreeNode}
-                            treeData={treeData}
-                        />
-                    </Splitter.Panel>
+                    {/*<Splitter.Panel defaultSize="20%" min="20%" max="70%">*/}
+                    {/*    <Tree*/}
+                    {/*        defaultExpandAll={true}*/}
+                    {/*        onSelect={onSelectTreeNode}*/}
+                    {/*        treeData={treeData}*/}
+                    {/*    />*/}
+                    {/*</Splitter.Panel>*/}
                     <Splitter.Panel >
                         <Flex vertical gap="middle">
                             {agentContentBubble}
@@ -851,8 +851,7 @@ const DataClerk = () => {
 
                             <Prompts title="🤔 你是不是想问:" items={prompts} hidden={!showPrompts} onItemClick={info => {
                                 if (info.data.type === 'advice') {
-                                    const description = info.data.description
-                                    setValue(description.substring(0, description.indexOf("：")+ 1))
+                                    setValue(info.data.description)
                                 } else if (info.data.type === 'execute') {
                                     submitQuestionStream(info.data.description);
                                 }

@@ -4,11 +4,13 @@
 ![](https://img.shields.io/badge/Python-3.10+-green)
 
 ## 🎯 项目简介
-WagnerAgent 是一个革命性的多Agent系统，专为解决传统数据平台开发中的核心痛点而设计。它通过自然语言交互，让业务人员能够直接访问和分析分散在各个业务系统中的数据，无需经过繁琐的数据仓库分层加工和报表开发流程。
+WagnerAgent 是一个基于LLM的多Agent系统，专为解决传统数据平台开发中的核心痛点而设计。它通过自然语言交互，让业务人员能够直接访问和分析分散在各个业务系统中的数据，无需经过繁琐的数据仓库分层加工和报表开发流程。
 
 **核心价值主张**：将数据需求响应从"天/周"级缩短到"分钟"级，消除数据冗余存储和重复加工，大幅降低企业数据平台的人力成本和硬件成本。
 
 💡 **灵感来源**：传统数据仓库建设过程中面临的存储多倍冗余、人肉解析器、需求传递偏差、数据员角色瓶颈等长期痛点。
+
+![](assets/target.png)
 
 ## ✨ 核心特性
 ### 🗣️ 自然语言数据交互
@@ -18,7 +20,7 @@ WagnerAgent 是一个革命性的多Agent系统，专为解决传统数据平台
 
 **零学习成本**：像与同事对话一样获取数据洞察
 
-### 🧠 智能多层Agent架构
+### 🧠 多层Agent架构
 #### 1. 助手Agent (Assistant Agent)
 - **两层LLM推理引擎**：第一层Reasoner LLM进行"战略规划"，第二层Chat LLM负责"战术执行"
 
@@ -47,9 +49,10 @@ WagnerAgent 是一个革命性的多Agent系统，专为解决传统数据平台
 
 ## 🏗️ 系统架构
 
-架构介绍
+**架构介绍**
 基于LangGraph框架开发，适配各种大模型接入，mem0作为记忆存储套件，HuggingFace作为嵌入模型，redis-stack作为向量存储
 
+![](assets/SystemArchitecture.png)
 
 ## 🚀 快速开始
 ### 环境要求
@@ -71,9 +74,14 @@ cd WagnerAgent
 **2.安装依赖**
 
 ```bash
+# 安装后端python依赖
+cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+# 安装前端js依赖
+cd frontend
+npm install
 ```
 
 **3.配置**
@@ -83,15 +91,74 @@ vim config.py
 
 **4.启动服务**
 ```bash
-python app.py
+# 后端服务启动
+python backend/app.py
+# 前端服务启动
+cd frontend;npm start
 ```
 
 ### 基本使用示例
 **1.注册数据工具**
 
+同时支持注册http工具和mcp工具，同时支持在调用http POST/GET服务前/后对调用参数和返回结果使用python脚本进行加工
+![](assets/tool_http.png)
+![](assets/tool_mcp.png)
+
 **2.定义数据员Agent/助手Agent**
 
+分别定义数据员Agent和助手Agent，其中需要定义系统提示词用来描述该Agent的使用场景。数据员Agent还需要选择数据工具，用来进行后续的任务定义和执行
+![](assets/agent_data_clerk.png)
+![](assets/agent_assistant.png)
+
 **3.开始对话**
+
+***数据员Agent***
+
+打开数据员Agent对话
+
+![](assets/data_clerk_welcome.png)
+
+首先查询已注册的数据工具
+![](assets/show_tool.png)
+
+尝试进行数据查询
+![](assets/query_data.png)
+
+如果验证可以查到想要的数据，则创建相关任务
+![](assets/create_task.png)
+
+参照任务模板完成任务创建
+![](assets/finish_create_task.png)
+
+进行任务试跑，验证任务结果符合预期
+![](assets/test_run.png)
+
+验证完成后保存任务
+![](assets/save_task.png)
+
+之后可以执行任务（支持带参数和不带参数执行）
+![](assets/execute_task.png)
+
+***助手Agent***
+
+打开助手Agent对话，可以查询已创建的任务
+![](assets/show_tasks.png)
+
+上传自己的知识库文档
+![](assets/knowledge_upload.png)
+
+向助手Agent提出问题，助手Agent会检索知识库、历史记忆，结合当前任务详情，进行推理，给出任务执行步骤
+![](assets/assistant_reasoner.png)
+
+完成推理之后按步骤执行，得出答案
+![](assets/assistant_result.png)
+
+可以对助手Agent给出的答案点赞，生成永久记忆为下一次执行提供参考
+![](assets/assistant_like.png)
+
+当有足够的知识库和相关问题的历史记忆后，可以关闭深度思考开关，提升问题回答效率
+
+
 
 ## 📊 与现有方案对比
 
@@ -119,19 +186,6 @@ python app.py
 - **部门效能分析**：跨系统数据自动关联和分析
 - **成本控制**：实时监控各项成本指标异常
 - **决策支持**：高层管理所需的综合业务洞察
-
-📄 许可证
-本项目采用Apache License 2.0开源协议 - 详见LICENSE文件。
-
-🙋 常见问题
-Q: 如何保证查询业务系统数据的性能？
-A: 系统支持查询优化和缓存策略，对于复杂查询建议配置只读副本。
-
-Q: 数据安全性如何保障？
-A: 支持行列级数据权限控制，所有查询都在企业安全体系内执行。
-
-Q: 与现有数据仓库的关系？
-A: 本系统可与现有数据仓库共存，逐步接管即席查询和敏捷分析需求。
 
 ---------------------
 

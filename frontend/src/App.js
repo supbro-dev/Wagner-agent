@@ -4,6 +4,7 @@ import DataClerk from "./data_clerk/data_clerk";
 import Assistant from "./assistant/assistant";
 import AgentManagement from "./agent_management/agent_management";
 import LLMToolManagement from "./llm_tool_management/llm_tool_management";
+import ToolManagement from "./tool_management/tool_management";
 import './App.css';
 import {BrowserRouter, Route, Routes} from "react-router-dom";
 
@@ -15,6 +16,7 @@ function App() {
                 <Route path="/assistant" element={<Assistant />} />
                 <Route path="/agentManagement" element={<AgentManagement />} />
                 <Route path="/llmToolManagement" element={<LLMToolManagement />} />
+                <Route path="/toolManagement" element={<ToolManagement />} />
             </Routes>
         </BrowserRouter>
     );
